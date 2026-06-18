@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA COMPATIBILIDADE) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO DESCOLADORA DE STRINGS) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador adaptativo com separação de strings coladas.")
+    st.markdown("Processador de alta precisão especializado em descolar números agrupados.")
     
     import pdfplumber
     import re
@@ -169,8 +169,8 @@ elif menu == "⛽ Importar TicketLog":
                     for linha in texto.split('\n'):
                         linha = linha.strip()
                         
-                        # 1. Filtro: Precisa ter uma data
-                        if not re.search(r'\d{2}/\d{2}/\d{4}', linha):
+                        # 1. Filtro: Precisa ter data no início da linha
+                        if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
                         # 2. Localiza a Placa
@@ -180,53 +180,46 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper().replace('-', '')
                         
                         try:
-                            # 3. Limpeza de emergência para separar números grudados em letras (ex: 140,00OLEO -> 140,00 OLEO)
-                            linha_ajustada = re.sub(r'([\d,]+)([A-Za-z]+)', r'\1 \2', linha)
-                            linha_ajustada = re.sub(r'([A-Za-z]+)([\d,]+)', r'\1 \2', linha_ajustada)
-                            linha_ajustada = linha_ajustada.replace('R$', '')
+                            # Captura a data da transação (primeiros 10 caracteres)
+                            data_transacao = linha[:10]
                             
-                            # Pega todos os números isolados da linha
-                            numeros = re.findall(r'-?[\d\.,]+', linha_ajustada)
+                            # 3. EXTRAÇÃO DA STRING GRUDADA NO FINAL
+                            # Vamos pegar o último bloco da linha (separado por espaço do nome do motorista)
+                            partes_linha = linha.split()
+                            bloco_grudado = partes_linha[-1] # Ex: -31.34444,115,89255,27
                             
-                            # Filtra descartando datas e cartões
-                            numeros_validos = []
-                            for n in numeros:
-                                if '/' not in n and len(n.replace('.','').replace(',','')) < 9:
-                                    numeros_validos.append(n)
+                            # Encontra todas as ocorrências de números com vírgula (decimais) dentro do bloco grudado
+                            # No exemplo, vai achar ['44,11', '5,89', '255,27']
+                            decimais = re.findall(r'\d+,\d{2}', bloco_grudado)
                             
-                            if len(numeros_validos) < 3:
-                                continue
+                            if len(decimais) >= 3:
+                                # Contando de trás para frente no bloco grudado:
+                                valor_total = float(decimais[-1].replace(',', '.'))
+                                # decimais[-2] é o preço do litro (ex: 5,89)
+                                litros = float(decimais[-2].replace(',', '.'))
                                 
-                            def para_float(txt):
-                                return float(txt.replace('.', '').replace(',', '.').strip())
-                            
-                            # No final da linha limpa, os últimos valores são estruturalmente:
-                            # ... [KM] ... [LITROS] [PREÇO UNITÁRIO] [VALOR TOTAL]
-                            valor_total = para_float(numeros_validos[-1])
-                            litros = para_float(numeros_validos[-3])
-                            
-                            # Identifica o KM de forma segura (geralmente o número antes do combustível)
-                            km_bruto = numeros_validos[-4]
-                            if para_float(km_bruto) < 15 or km_bruto == numeros_validos[-3]:
-                                km_bruto = numeros_validos[-5]
+                                # O KM é tudo o que sobrou no início da string antes do primeiro decimal de litros
+                                # No exemplo, se removermos '44,11...', sobra o '-31.344'
+                                primeira_posicao_decimal = bloco_grudado.find(decimais[-3])
+                                km_texto = bloco_grudado[:primeira_posicao_decimal]
                                 
-                            km = abs(para_float(km_bruto))
-                            
-                            data_transacao = re.search(r'(\d{2}/\d{2}/\d{4})', linha).group(1)
-                            
-                            dados_extraidos.append({
-                                "Placa": placa,
-                                "Data": data_transacao,
-                                "Litros": litros,
-                                "Valor Total": valor_total,
-                                "Km": km
-                            })
+                                # Limpa o texto do KM (remove pontos e sinais de menos)
+                                km_texto_limpo = km_texto.replace('.', '').replace('-', '').strip()
+                                km = float(km_texto_limpo) if km_texto_limpo.isdigit() else 0.0
+                                
+                                dados_extraidos.append({
+                                    "Placa": placa,
+                                    "Data": data_transacao,
+                                    "Litros": litros,
+                                    "Valor Total": valor_total,
+                                    "Km": km
+                                })
                         except:
                             continue
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 {len(df_ticket)} registros mapeados e corrigidos com sucesso!")
+                st.success(f"🎉 Sucesso! {len(df_ticket)} registros decodificados com precisão técnica.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -238,9 +231,9 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados salvos e frotas atualizadas!")
+                    st.success("Tudo atualizado com sucesso no banco de dados!")
             else:
-                st.error("Não foi possível processar automaticamente.")
+                st.error("Não foi possível decodificar os blocos grudados. Verifique se o formato do relatório mudou.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
