@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO EXTRAÇÃO EXATA REGEX) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO EM FATIAMENTO REVERSO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador matemático de strings contínuas via Regex puro.")
+    st.markdown("Processador por fatiamento reverso de strings (imune a aglutinação de caracteres).")
     
     import pdfplumber
     import re
@@ -169,7 +169,7 @@ elif menu == "⛽ Importar TicketLog":
                     for linha in texto.split('\n'):
                         linha = linha.strip().replace('R$', '')
                         
-                        # 1. Filtro: Precisa ter uma estrutura de data no início
+                        # 1. Filtro: Precisa ter data no início
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
@@ -180,27 +180,41 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. O CORAÇÃO DO CÓDIGO: Expressão regular cirúrgica para o final da string
-                            # Captura exatamente: KM (com ponto e menos opcional) + Litros + Preço + Total
-                            # Ex de correspondência: -31.34444,115,89255,27
-                            padrao_valores = re.search(r'(-?[\d\.]+)(\d+,\d{2})(\d+,\d{2})(\d+,\d{2})$', linha)
+                            # 3. EXTRAÇÃO REVERSA BASEADA NAS VÍRGULAS
+                            # Encontra todas as posições de vírgulas na linha
+                            posicoes_virgulas = [i for i, caractere in enumerate(linha) if caractere == ',']
                             
-                            if padrao_valores:
-                                km_bruto = padrao_valores.group(1)
-                                litros_bruto = padrao_valores.group(2)
-                                # grupo(3) é o valor por litro (ex: 5,89), não precisamos salvar
-                                total_bruto = padrao_valores.group(4)
+                            if len(posicoes_virgulas) >= 2:
+                                # A última vírgula pertence ao Valor Total
+                                idx_ultima_virgula = posicoes_virgulas[-1]
+                                # O valor total termina 2 dígitos após a última vírgula
+                                txt_valor_total = linha[idx_ultima_virgula-5:idx_ultima_virgula+3] 
+                                # Garante pegar apenas o número limpando letras se sobrarem à esquerda
+                                txt_valor_total = re.search(r'[\d,]+', txt_valor_total).group()
                                 
-                                # Funções de conversão limpa para Float
-                                def para_float(txt):
-                                    return float(txt.replace('.', '').replace(',', '.').strip())
+                                # A penúltima vírgula pertence ao Preço por Litro, e a antepenúltima aos Litros
+                                # Se o texto estiver muito grudado, vamos achar os litros buscando o primeiro padrão de vírgula antes do preço
+                                idx_virgula_litros = posicoes_virgulas[-3] if len(posicoes_virgulas) >= 3 else posicoes_virgulas[-2]
+                                txt_litros = linha[idx_virgula_litros-3:idx_virgula_litros+3]
+                                txt_litros = re.search(r'[\d,]+', txt_litros).group()
                                 
-                                valor_total = para_float(total_bruto)
-                                litros = para_float(litros_bruto)
+                                # Conversão para Float
+                                valor_total = float(txt_valor_total.replace(',', '.'))
+                                litros = float(txt_litros.replace(',', '.'))
                                 
-                                # Tratamento do KM para remover o excesso de caracteres colados
-                                km_limpo = km_bruto.replace('.', '').replace('-', '').strip()
-                                km = float(km_limpo) if km_limpo.isdigit() else 0.0
+                                # 4. ISOLAMENTO DO KM (ODÔMETRO)
+                                # O KM está antes do primeiro padrão de combustível ou logo após o nome do motorista
+                                # Vamos pegar tudo o que está entre a placa e o começo dos valores numéricos com vírgula
+                                idx_inicio_numeros = linha.find(txt_litros)
+                                texto_meio = linha[busca_placa.end():idx_inicio_numeros]
+                                
+                                # Busca qualquer sequência de números com ponto (ex: 31.344 ou -31.344)
+                                busca_km = re.search(r'(-?[\d\.]+)', texto_meio)
+                                if busca_km:
+                                    km_limpo = busca_km.group(1).replace('.', '').replace('-', '').strip()
+                                    km = float(km_limpo) if km_limpo.isdigit() else 0.0
+                                else:
+                                    km = 0.0
                                 
                                 data_transacao = linha[:10]
                                 
@@ -216,10 +230,10 @@ elif menu == "⛽ Importar TicketLog":
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Sucesso absoluto! {len(df_ticket)} registros decodificados com precisão.")
+                st.success(f"🎉 Processado com sucesso! Mapeados {len(df_ticket)} abastecimentos.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Confirmar e Injetar no Banco de Dados"):
+                if st.button("Confirmar e Salvar no Banco"):
                     for _, row in df_ticket.iterrows():
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
@@ -228,9 +242,9 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Banco de dados e odômetros atualizados com sucesso!")
+                    st.success("Dados salvos e odômetros sincronizados!")
             else:
-                st.error("Não foi possível processar. Certifique-se de que o padrão do texto bate com o debug.")
+                st.error("Erro de leitura: O fatiador reverso não encontrou o padrão de decimais.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
