@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO ADAPTATIVA COMPLETA) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO COORDENADAS ESPACIAIS) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador de fluxo contínuo com decodificador numérico avançado.")
+    st.markdown("Processador de alta fidelidade baseado no mapeamento geométrico de palavras.")
     
     import pdfplumber
     import re
@@ -156,98 +156,107 @@ elif menu == "⛽ Importar TicketLog":
     if uploaded_file is not None:
         try:
             dados_extraidos = []
-            texto_cru_debug = ""
             
             with pdfplumber.open(uploaded_file) as pdf:
                 for num_pag, pagina in enumerate(pdf.pages, 1):
-                    texto = pagina.extract_text()
-                    if not texto:
+                    # Extrai os objetos de palavras contendo o texto e suas coordenadas na página
+                    palavras = pagina.extract_words(x_tolerance=3, y_tolerance=3)
+                    
+                    if not palavras:
                         continue
                     
-                    texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
-                    
-                    for linha in texto.split('\n'):
-                        linha = linha.strip().replace('R$', '').replace(' ', '')
+                    # Agrupa as palavras por linha (baseado na posição vertical 'top')
+                    linhas_dict = {}
+                    for p in palavras:
+                        # Arredonda a posição vertical para agrupar palavras na mesma linha física
+                        y_pos = round(p['top'], 1)
                         
-                        # 1. Filtro: Linha deve começar com data
-                        if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
+                        encontrou_linha = False
+                        for k in linhas_dict.keys():
+                            if abs(k - y_pos) < 3: # Margem de tolerância vertical
+                                linhas_dict[k].append(p)
+                                encontrou_linha = True
+                                break
+                        if not encontrou_linha:
+                            linhas_dict[y_pos] = [p]
+                    
+                    # Processa cada linha ordenada de cima para baixo
+                    for y in sorted(linhas_dict.keys()):
+                        # Ordena as palavras da linha da esquerda para a direita
+                        palavras_linha = sorted(linhas_dict[y], key=lambda x: x['x0'])
+                        
+                        # Transforma em texto corrido com espaços forçados para análise de estrutura básica
+                        texto_linha = " ".join([p['text'] for p in palavras_linha])
+                        
+                        # 1. Filtro: A linha precisa começar com data
+                        if not re.match(r'^\d{2}/\d{2}/\d{4}', texto_linha):
                             continue
-                            
-                        # 2. Localiza a Placa Mercosul/Nacional
-                        busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha, re.IGNORECASE)
+                        
+                        # 2. Localiza a Placa Mercosul ou Antiga
+                        busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', texto_linha, re.IGNORECASE)
                         if not busca_placa:
                             continue
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. EXTRAÇÃO EXATA BASEADA NO PADRÃO GEOMÉTRICO GRUDADO
-                            # Procura o KM (número com ponto e hífen opcional), seguido por 3 blocos separados por vírgulas
-                            # Ex que este regex extrai: (-31.344)(44),(11)(5),(89)(255),(27)
-                            match_blocos = re.search(r'(-?[\d\.]+)(\d+),(\d+),(\d+),(\d{2})$', linha)
+                            # 3. EXTRAÇÃO CIRÚRGICA DE VALORES PELA EXTREMIDADE DIREITA (COORDENADAS X)
+                            # Filtramos apenas blocos que possuem números ou vírgulas
+                            blocos_numericos = []
+                            for p in palavras_linha:
+                                txt = p['text'].replace('R$', '').strip()
+                                # Se contém número ou caracteres matemáticos válidos
+                                if re.search(r'[\d\.,-]', txt):
+                                    blocos_numericos.append(p)
                             
-                            if match_blocos:
-                                km_bruto = match_blocos.group(1)   # Ex: -31.344
-                                miolo_1 = match_blocos.group(2)    # Ex: 44 (Parte inteira dos litros)
-                                miolo_2 = match_blocos.group(3)    # Ex: 115 (Centavos litros + Inteiro Preço)
-                                miolo_3 = match_blocos.group(4)    # Ex: 89255 (Centavos Preço + Inteiro Total)
-                                centavos_total = match_blocos.group(5) # Ex: 27 (Centavos do Total)
+                            if len(blocos_numericos) < 3:
+                                continue
                                 
-                                # Reconstrução Matemática do Valor Total:
-                                # O valor total ocupa sempre os últimos caracteres antes da última vírgula.
-                                # Como sabemos que o total é um valor financeiro coerente com o relatório,
-                                # pegamos os últimos dígitos do miolo_3 (geralmente 3 dígitos para centenas)
-                                txt_total_inteiro = miolo_3[-3:] if len(miolo_3) > 2 else miolo_3
-                                valor_total = float(f"{txt_total_inteiro}.{centavos_total}")
+                            # Ordena estritamente pela posição horizontal final (x1)
+                            blocos_numericos = sorted(blocos_numericos, key=lambda x: x['x1'])
+                            
+                            # O valor total e os litros ficam sempre nas últimas colunas (maiores coordenadas X)
+                            txt_total = blocos_numericos[-1]['text']
+                            txt_litros = blocos_numericos[-3]['text'] if len(blocos_numericos) >= 3 else blocos_numericos[-2]['text']
+                            
+                            # Para o KM, buscamos o primeiro bloco numérico longo (geralmente com ponto) 
+                            # que aparece após a posição da placa
+                            txt_km = "0"
+                            for b in blocos_numericos:
+                                # Se o bloco está à direita da placa e se assemelha a um odômetro
+                                if b['x0'] > palavras_linha[[p['text'] for p in palavras_linha].index(busca_placa.group(0))]['x1']:
+                                    teste_km = b['text'].replace('.', '').replace('-', '').strip()
+                                    if teste_km.isdigit() and len(teste_km) >= 3 and b != blocos_numericos[-1] and b != blocos_numericos[-3]:
+                                        txt_km = b['text']
+                                        break
+                            
+                            # Tratamento e conversão limpa de strings aglutinadas remanescentes
+                            def limpar_e_converter(texto_val):
+                                # Se houver caracteres grudados extras no bloco, extrai apenas o primeiro padrão decimal
+                                match = re.search(r'(-?[\d\.,]+)', texto_val)
+                                if match:
+                                    v = match.group(1)
+                                    return float(v.replace('.', '').replace(',', '.'))
+                                return 0.0
                                 
-                                # Reconstrução Matemática dos Litros:
-                                # Os centavos dos litros são sempre os 2 primeiros dígitos do miolo_2
-                                txt_litros_centavos = miolo_2[:2]
-                                litros = float(f"{miolo_1}.{txt_litros_centavos}")
-                                
-                                # Limpeza do KM
-                                km_limpo = km_bruto.replace('.', '').replace('-', '').strip()
-                                km = float(km_limpo) if km_limpo.isdigit() else 0.0
-                                
-                                data_transacao = linha[:10]
-                                
-                                dados_extraidos.append({
-                                    "Placa": placa,
-                                    "Data": data_transacao,
-                                    "Litros": litros,
-                                    "Valor Total": valor_total,
-                                    "Km": km
-                                })
-                            else:
-                                # Contingência secundária por fatiamento rígido caso o regex falhe em alguma linha
-                                pos_virgulas = [i for i, c in enumerate(linha) if c == ',']
-                                if len(pos_virgulas) >= 3:
-                                    v_total_txt = linha[pos_virgulas[-1]-3:pos_virgulas[-1]+3]
-                                    v_total_txt = re.search(r'[\d,]+', v_total_txt).group()
-                                    
-                                    v_litros_txt = linha[pos_virgulas[-3]-2:pos_virgulas[-3]+3]
-                                    v_litros_txt = re.search(r'[\d,]+', v_litros_txt).group()
-                                    
-                                    idx_valores = linha.find(v_litros_txt)
-                                    texto_km = linha[busca_placa.end():idx_valores]
-                                    v_km_txt = re.search(r'(-?[\d\.]+)', texto_km).group(1)
-                                    
-                                    valor_total = float(v_total_txt.replace(',', '.'))
-                                    litros = float(v_litros_txt.replace(',', '.'))
-                                    km = abs(float(v_km_txt.replace('.', '')))
-                                    
-                                    dados_extraidos.append({
-                                        "Placa": placa,
-                                        "Data": linha[:10],
-                                        "Litros": litros,
-                                        "Valor Total": valor_total,
-                                        "Km": km
-                                    })
+                            valor_total = limpar_e_converter(txt_total)
+                            litros = limpar_e_converter(txt_litros)
+                            km = abs(limpar_e_converter(txt_km))
+                            
+                            data_transacao = texto_linha[:10]
+                            
+                            dados_extraidos.append({
+                                "Placa": placa,
+                                "Data": data_transacao,
+                                "Litros": litros,
+                                "Valor Total": valor_total,
+                                "Km": km
+                            })
                         except:
                             continue
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Sucesso! {len(df_ticket)} registros importados e corrigidos.")
+                st.success(f"🎉 Sucesso definitivo! {len(df_ticket)} registros extraídos por mapeamento geométrico.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -259,14 +268,12 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Banco de dados e odômetros sincronizados!")
+                    st.success("Tudo atualizado com sucesso no banco de dados!")
             else:
-                st.error("Erro estrutural de leitura: O decodificador não conseguiu separar as emendas decimais.")
-                with st.expander("Visualizar texto cru capturado (Debug)"):
-                    st.code(texto_cru_debug[:3000])
-                    
+                st.error("Não foi possível decodificar as colunas mesmo usando mapeamento espacial. O arquivo está corrompido?")
+                
         except Exception as e:
-            st.error(f"Erro no motor de processamento: {e}")
+            st.error(f"Erro no motor de processamento geométrico: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
