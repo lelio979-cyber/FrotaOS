@@ -143,37 +143,80 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO PDF) ---
 elif menu == "⛽ Importar TicketLog":
-    st.title("⛽ Integração e Importação TicketLog")
-    st.markdown("Faça o upload do arquivo CSV exportado do portal Ticket Log para conciliação automática.")
+    st.title("⛽ Integração e Importação TicketLog (PDF)")
+    st.markdown("Faça o upload do relatório original em **PDF** exportado do portal TicketLog.")
     
-    uploaded_file = st.file_uploader("Escolha o arquivo CSV da TicketLog", type=['csv'])
+    import pdfplumber
+    import re
+
+    uploaded_file = st.file_uploader("Escolha o arquivo PDF da TicketLog", type=['pdf'])
     
     if uploaded_file is not None:
         try:
-            # Simulação da leitura e mapeamento das colunas padrão da TicketLog
-            df_ticket = pd.read_csv(uploaded_file, sep=";") # Ajustar separador conforme seu padrão (.csv ou .txt)
-            st.write("Pré-visualização dos dados importados:")
-            st.dataframe(df_ticket.head())
+            dados_extraidos = []
             
-            if st.button("Processar e Salvar no Banco de Dados"):
-                # Mapeamento exemplo (ajuste os nomes das colunas de acordo com o seu relatório real)
-                # Colunas esperadas no exemplo: 'Placa', 'Data', 'Litros', 'Valor Total', 'Km'
-                for _, row in df_ticket.iterrows():
-                    query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
-                                VALUES (?, ?, ?, ?, ?, ?)''', 
-                             (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog"), 
-                             is_select=False)
+            # Abre o PDF na memória
+            with pdfplumber.open(uploaded_file) as pdf:
+                for pagina in pdf.pages:
+                    texto = pagina.extract_text()
+                    if not texto:
+                        continue
                     
-                    # Atualiza o KM do veículo automaticamente de forma incremental
-                    query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
-                             (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
+                    # Divide o texto por linhas
+                    linhas = texto.split('\n')
                     
-                st.success("Relatório TicketLog importado e processado com sucesso! KMs atualizados.")
+                    for linha in linhas:
+                        # Expressão regular para identificar uma linha de abastecimento típica da TicketLog
+                        # Procura por padrões de Placa (AAA-1234 ou AAA1B23) + Data + Valores
+                        if re.search(r'[A-Z]{3}-?\d[A-Z0-9]\d{2}', linha):
+                            # Divide a linha por espaços para capturar as colunas
+                            partes = linha.split()
+                            
+                            # Exemplo básico de captura posicional (ajuste conforme a ordem do seu PDF)
+                            # Geralmente a placa é um dos primeiros itens e o valor/KM ficam no fim
+                            try:
+                                placa_pdf = partes[0]
+                                data_pdf = partes[1] # Formato DD/MM/AAAA
+                                
+                                # Limpeza de valores (remove R$, pontos de milhar e troca vírgula por ponto)
+                                valor_total_limpo = partes[-2].replace('R$', '').replace('.', '').replace(',', '.')
+                                km_limpo = partes[-1].replace('.', '').replace(',', '.')
+                                
+                                dados_extraidos.append({
+                                    "Placa": placa_pdf,
+                                    "Data": data_pdf,
+                                    "Litros": 0.0, # Se não achar os litros exatos, salvamos zerado ou estimamos
+                                    "Valor Total": float(valor_total_limpo),
+                                    "Km": float(km_limpo)
+                                })
+                            except:
+                                continue # Ignora linhas que não encaixam no padrão numérico
+            
+            if dados_extraidos:
+                df_ticket = pd.DataFrame(dados_extraidos)
+                st.write("### Dados identificados no PDF:")
+                st.dataframe(df_ticket)
+                
+                if st.button("Confirmar e Salvar no Banco de Dados"):
+                    for _, row in df_ticket.iterrows():
+                        # Salva no banco de dados
+                        query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
+                                    VALUES (?, ?, ?, ?, ?, ?)''', 
+                                 (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog PDF"), 
+                                 is_select=False)
+                        
+                        # Atualiza a quilometragem do veículo se o KM do PDF for maior que o atual
+                        query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
+                                 (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
+                        
+                    st.success(f"Sucesso! {len(df_ticket)} abastecimentos importados do PDF e KMs atualizados.")
+            else:
+                st.warning("Nenhum padrão de abastecimento foi reconhecido no PDF. Verifique se o arquivo não é digitalizado (imagem).")
+                
         except Exception as e:
-            st.error(f"Erro ao processar arquivo. Certifique-se de que o separador e as colunas estão corretos. Erro: {e}")
-
+            st.error(f"Erro ao processar o PDF: {e}")
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
     st.title("🔧 Manutenção & Ordens de Serviço (O.S.)")
