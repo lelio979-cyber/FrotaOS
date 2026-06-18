@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO EM FATIAMENTO REVERSO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO ULTRA-BLINDADA FATIAMENTO FIXO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador por fatiamento reverso de strings (imune a aglutinação de caracteres).")
+    st.markdown("Processador por corte geométrico de strings contínuas.")
     
     import pdfplumber
     import re
@@ -167,9 +167,9 @@ elif menu == "⛽ Importar TicketLog":
                     texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
                     
                     for linha in texto.split('\n'):
-                        linha = linha.strip().replace('R$', '')
+                        linha = linha.strip().replace('R$', '').replace(' ', '') # Remove TODOS os espaços e R$
                         
-                        # 1. Filtro: Precisa ter data no início
+                        # 1. Filtro: Precisa ter data no início (agora grudada com a hora)
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
@@ -180,41 +180,36 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. EXTRAÇÃO REVERSA BASEADA NAS VÍRGULAS
-                            # Encontra todas as posições de vírgulas na linha
-                            posicoes_virgulas = [i for i, caractere in enumerate(linha) if caractere == ',']
+                            # 3. FATIAMENTO GEOMÉTRICO DO FINAL DA LINHA GRUDADA
+                            # Ex de fim de linha: 44,115,89255,27
+                            # O valor total são sempre os últimos 6 caracteres (ex: 255,27) ou até encontrar a vírgula
                             
-                            if len(posicoes_virgulas) >= 2:
-                                # A última vírgula pertence ao Valor Total
-                                idx_ultima_virgula = posicoes_virgulas[-1]
-                                # O valor total termina 2 dígitos após a última vírgula
-                                txt_valor_total = linha[idx_ultima_virgula-5:idx_ultima_virgula+3] 
-                                # Garante pegar apenas o número limpando letras se sobrarem à esquerda
-                                txt_valor_total = re.search(r'[\d,]+', txt_valor_total).group()
+                            # Vamos quebrar a string pelas últimas duas vírgulas de forma cirúrgica
+                            partes_valores = re.findall(r'\d+,\d{2}', linha)
+                            
+                            if len(partes_valores) >= 3:
+                                # Pega os valores reais mapeados pelo Regex de decimais puros
+                                txt_total = partes_valores[-1]
+                                txt_litros = partes_valores[-3]
                                 
-                                # A penúltima vírgula pertence ao Preço por Litro, e a antepenúltima aos Litros
-                                # Se o texto estiver muito grudado, vamos achar os litros buscando o primeiro padrão de vírgula antes do preço
-                                idx_virgula_litros = posicoes_virgulas[-3] if len(posicoes_virgulas) >= 3 else posicoes_virgulas[-2]
-                                txt_litros = linha[idx_virgula_litros-3:idx_virgula_litros+3]
-                                txt_litros = re.search(r'[\d,]+', txt_litros).group()
-                                
-                                # Conversão para Float
-                                valor_total = float(txt_valor_total.replace(',', '.'))
+                                valor_total = float(txt_total.replace(',', '.'))
                                 litros = float(txt_litros.replace(',', '.'))
                                 
-                                # 4. ISOLAMENTO DO KM (ODÔMETRO)
-                                # O KM está antes do primeiro padrão de combustível ou logo após o nome do motorista
-                                # Vamos pegar tudo o que está entre a placa e o começo dos valores numéricos com vírgula
-                                idx_inicio_numeros = linha.find(txt_litros)
-                                texto_meio = linha[busca_placa.end():idx_inicio_numeros]
+                                # 4. CAPTURA DO KM (ODÔMETRO)
+                                # O KM é tudo o que está entre a placa e o primeiro número com vírgula do final
+                                idx_placa_fim = busca_placa.end()
+                                idx_valores_inicio = linha.find(txt_litros)
                                 
-                                # Busca qualquer sequência de números com ponto (ex: 31.344 ou -31.344)
-                                busca_km = re.search(r'(-?[\d\.]+)', texto_meio)
-                                if busca_km:
-                                    km_limpo = busca_km.group(1).replace('.', '').replace('-', '').strip()
-                                    km = float(km_limpo) if km_limpo.isdigit() else 0.0
-                                else:
-                                    km = 0.0
+                                texto_meio = linha[idx_placa_fim:idx_valores_inicio]
+                                
+                                # Remove o nome do motorista/combustível mantendo apenas os números e pontos do KM
+                                km_numeros = re.findall(r'-?[\d\.]+', texto_meio)
+                                
+                                km = 0.0
+                                for bloco in km_numeros:
+                                    if '.' in bloco or len(bloco) >= 3:
+                                        km = abs(float(bloco.replace('.', '')))
+                                        break
                                 
                                 data_transacao = linha[:10]
                                 
@@ -230,7 +225,7 @@ elif menu == "⛽ Importar TicketLog":
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Processado com sucesso! Mapeados {len(df_ticket)} abastecimentos.")
+                st.success(f"🎉 Concluído com sucesso! {len(df_ticket)} registros integrados.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -244,7 +239,7 @@ elif menu == "⛽ Importar TicketLog":
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
                     st.success("Dados salvos e odômetros sincronizados!")
             else:
-                st.error("Erro de leitura: O fatiador reverso não encontrou o padrão de decimais.")
+                st.error("Erro estrutural: O motor não conseguiu isolar as strings grudadas.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
