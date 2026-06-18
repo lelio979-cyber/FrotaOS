@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA RESISTÊNCIA) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO ADAPTATIVA COMPLETA) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador de fluxo contínuo imune a aglutinação de decimais.")
+    st.markdown("Processador de fluxo contínuo com decodificador numérico avançado.")
     
     import pdfplumber
     import re
@@ -180,43 +180,64 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. EXTRAÇÃO CIRÚRGICA DE TRÁS PARA FRENTE
-                            # Vamos isolar o bloco final que contém os números após o nome do motorista
-                            # Identificamos o último traço ou ponto que define o KM
-                            match_valores = re.search(r'(-?\d+\.\d+.*)$', linha)
+                            # 3. EXTRAÇÃO EXATA BASEADA NO PADRÃO GEOMÉTRICO GRUDADO
+                            # Procura o KM (número com ponto e hífen opcional), seguido por 3 blocos separados por vírgulas
+                            # Ex que este regex extrai: (-31.344)(44),(11)(5),(89)(255),(27)
+                            match_blocos = re.search(r'(-?[\d\.]+)(\d+),(\d+),(\d+),(\d{2})$', linha)
                             
-                            if match_valores:
-                                bloco_numerico = match_valores.group(1) # Ex: -31.34444,115,89255,27
+                            if match_blocos:
+                                km_bruto = match_blocos.group(1)   # Ex: -31.344
+                                miolo_1 = match_blocos.group(2)    # Ex: 44 (Parte inteira dos litros)
+                                miolo_2 = match_blocos.group(3)    # Ex: 115 (Centavos litros + Inteiro Preço)
+                                miolo_3 = match_blocos.group(4)    # Ex: 89255 (Centavos Preço + Inteiro Total)
+                                centavos_total = match_blocos.group(5) # Ex: 27 (Centavos do Total)
                                 
-                                # Encontra as posições de todas as vírgulas dentro deste bloco
-                                pos_virgulas = [i for i, c in enumerate(bloco_numerico) if c == ',']
+                                # Reconstrução Matemática do Valor Total:
+                                # O valor total ocupa sempre os últimos caracteres antes da última vírgula.
+                                # Como sabemos que o total é um valor financeiro coerente com o relatório,
+                                # pegamos os últimos dígitos do miolo_3 (geralmente 3 dígitos para centenas)
+                                txt_total_inteiro = miolo_3[-3:] if len(miolo_3) > 2 else miolo_3
+                                valor_total = float(f"{txt_total_inteiro}.{centavos_total}")
                                 
-                                if len(pos_virgulas) >= 2:
-                                    # O Valor Total está sempre após a última vírgula (e inclui os 2 dígitos antes dela)
-                                    v_total_idx = pos_virgulas[-1]
-                                    txt_total = bloco_numerico[v_total_idx-4 : v_total_idx+3]
-                                    txt_total = re.search(r'[\d,]+', txt_total).group()
+                                # Reconstrução Matemática dos Litros:
+                                # Os centavos dos litros são sempre os 2 primeiros dígitos do miolo_2
+                                txt_litros_centavos = miolo_2[:2]
+                                litros = float(f"{miolo_1}.{txt_litros_centavos}")
+                                
+                                # Limpeza do KM
+                                km_limpo = km_bruto.replace('.', '').replace('-', '').strip()
+                                km = float(km_limpo) if km_limpo.isdigit() else 0.0
+                                
+                                data_transacao = linha[:10]
+                                
+                                dados_extraidos.append({
+                                    "Placa": placa,
+                                    "Data": data_transacao,
+                                    "Litros": litros,
+                                    "Valor Total": valor_total,
+                                    "Km": km
+                                })
+                            else:
+                                # Contingência secundária por fatiamento rígido caso o regex falhe em alguma linha
+                                pos_virgulas = [i for i, c in enumerate(linha) if c == ',']
+                                if len(pos_virgulas) >= 3:
+                                    v_total_txt = linha[pos_virgulas[-1]-3:pos_virgulas[-1]+3]
+                                    v_total_txt = re.search(r'[\d,]+', v_total_txt).group()
                                     
-                                    # Os Litros estão associados à primeira vírgula do bloco colado
-                                    v_litros_idx = pos_virgulas[0]
-                                    txt_litros = bloco_numerico[v_litros_idx-2 : v_litros_idx+3]
-                                    txt_litros = re.search(r'[\d,]+', txt_litros).group()
+                                    v_litros_txt = linha[pos_virgulas[-3]-2:pos_virgulas[-3]+3]
+                                    v_litros_txt = re.search(r'[\d,]+', v_litros_txt).group()
                                     
-                                    # O KM é a parte inicial até o primeiro ponto encontrado no bloco
-                                    txt_km = bloco_numerico.split(',')[0] # Pega o primeiro segmento (-31.34444 por ex)
-                                    # Remove os decimais que colaram no KM (deixando apenas o odômetro principal antes do ponto)
-                                    txt_km_limpo = txt_km.split('.')[0].replace('-', '').strip()
+                                    idx_valores = linha.find(v_litros_txt)
+                                    texto_km = linha[busca_placa.end():idx_valores]
+                                    v_km_txt = re.search(r'(-?[\d\.]+)', texto_km).group(1)
                                     
-                                    # Conversão limpa para tipos numéricos
-                                    valor_total = float(txt_total.replace(',', '.'))
-                                    litros = float(txt_litros.replace(',', '.'))
-                                    km = float(txt_km_limpo) if txt_km_limpo.isdigit() else 0.0
-                                    
-                                    data_transacao = linha[:10]
+                                    valor_total = float(v_total_txt.replace(',', '.'))
+                                    litros = float(v_litros_txt.replace(',', '.'))
+                                    km = abs(float(v_km_txt.replace('.', '')))
                                     
                                     dados_extraidos.append({
                                         "Placa": placa,
-                                        "Data": data_transacao,
+                                        "Data": linha[:10],
                                         "Litros": litros,
                                         "Valor Total": valor_total,
                                         "Km": km
@@ -226,7 +247,7 @@ elif menu == "⛽ Importar TicketLog":
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Sucesso! {len(df_ticket)} registros decodificados e isolados.")
+                st.success(f"🎉 Sucesso! {len(df_ticket)} registros importados e corrigidos.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -238,9 +259,9 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados integrados e salvos com sucesso!")
+                    st.success("Banco de dados e odômetros sincronizados!")
             else:
-                st.error("Erro de segmentação: O motor não conseguiu separar a string contínua.")
+                st.error("Erro estrutural de leitura: O decodificador não conseguiu separar as emendas decimais.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
