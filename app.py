@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO TABELA VISUAL) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO COMPATÍVEL COM TEXTO ALINHADO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador de tabelas nativo. Extrai as colunas diretamente da estrutura do relatório.")
+    st.markdown("Processador otimizado para o layout de texto alinhado da Ticket Log.")
     
     import pdfplumber
     import re
@@ -158,75 +158,81 @@ elif menu == "⛽ Importar TicketLog":
             dados_extraidos = []
             
             with pdfplumber.open(uploaded_file) as pdf:
-                for num_pag, pagina in enumerate(pdf.pages, 1):
-                    # Extrai a página em formato de matriz/tabela (linhas e colunas reais)
-                    tabelas = pagina.extract_tables()
+                for pagina in pdf.pages:
+                    texto = pagina.extract_text()
+                    if not texto:
+                        continue
                     
-                    for tabela in tabelas:
-                        for linha in tabela:
-                            # Ignora linhas vazias ou muito curtas
-                            if not linha or len(linha) < 5:
+                    for linha in texto.split('\n'):
+                        linha = linha.strip()
+                        
+                        # 1. Filtro: A linha PRECISA começar com a data (DD/MM/AAAA)
+                        if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
+                            continue
+                        
+                        # 2. Divide a linha usando o padrão de múltiplos espaços (2 ou mais espaços juntos)
+                        # Isso separa as colunas exatamente como o olho humano vê no relatório
+                        partes = re.split(r'\s{2,}', linha)
+                        
+                        # Uma linha de transação completa da TicketLog geralmente tem entre 7 e 10 colunas separadas assim
+                        if len(partes) >= 6:
+                            try:
+                                # Data/Hora é a primeira coluna
+                                data_transacao = partes[0].split()[0] # Pega só a data, ignora a hora se houver
+                                
+                                # A segunda coluna é o cartão (ex: 6035...) e a terceira costuma ser a Placa
+                                # Vamos achar a placa pelo formato dela em qualquer lugar das primeiras colunas
+                                placa = None
+                                for p in partes[1:4]:
+                                    busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', p, re.IGNORECASE)
+                                    if busca_placa:
+                                        placa = busca_placa.group(1).upper().replace('-', '')
+                                        break
+                                
+                                if not placa:
+                                    continue
+                                
+                                # Função para limpar os números brasileiros (R$, pontos e vírgulas)
+                                def limpar_num(txt):
+                                    txt = txt.replace('R$', '').replace('.', '').replace(',', '.').strip()
+                                    # Se houver um sinal de menos no final ou início (como o KM negativo), removemos com abs()
+                                    return float(txt)
+                                
+                                # Olhando o final da linha de trás para frente (garantido pelo alinhamento):
+                                valor_total = limpar_num(partes[-1]) # Última coluna
+                                # partes[-2] é o valor do litro
+                                litros = limpar_num(partes[-3])      # Antepenúltima coluna
+                                
+                                # O KM é a coluna que vem logo antes do Produto (Combustível)
+                                # No relatório padrão, contando de trás para frente, ele costuma ser a 5ª coluna do fim
+                                km_texto = partes[-5]
+                                # Caso o produto tenha nome composto e crie mais divisões, garantimos pegando o primeiro número válido antes dos litros
+                                if not km_texto.replace('.', '').replace('-', '').strip().isdigit():
+                                    # Se não for número puro, varre as colunas do meio para achar o odômetro
+                                    for p in partes[2:-3]:
+                                        limpo = p.replace('.', '').replace('-', '').strip()
+                                        if limpo.isdigit():
+                                            km_texto = p
+                                            break
+                                
+                                km = abs(limpar_num(km_texto))
+                                
+                                dados_extraidos.append({
+                                    "Placa": placa,
+                                    "Data": data_transacao,
+                                    "Litros": litros,
+                                    "Valor Total": valor_total,
+                                    "Km": km
+                                })
+                            except:
                                 continue
-                            
-                            # Transforma todos os campos em texto limpo para análise
-                            colunas = [str(celula).strip() for celula in linha if celula is not None]
-                            
-                            # Procuramos a linha que comece com a Data da Transação (ex: 16/06/2026)
-                            if colunas and re.match(r'^\d{2}/\d{2}/\d{4}', colunas[0]):
-                                try:
-                                    # Mapeamento exato baseado no layout padrão da TicketLog:
-                                    # colunas[0] -> Data/Hora
-                                    # colunas[1] -> Número do Cartão
-                                    
-                                    # Localiza a Placa (Geralmente na coluna 3 ou 4)
-                                    placa = None
-                                    for celula in colunas:
-                                        busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', celula, re.IGNORECASE)
-                                        if busca_placa:
-                                            placa = busca_placa.group(1).upper().replace('-', '')
-                                            break
-                                    
-                                    if not placa:
-                                        continue # Se não achou placa na linha, pula
-                                    
-                                    # Limpador matemático profissional
-                                    def converter_valor(txt):
-                                        txt = txt.replace('R$', '').replace('.', '').replace(',', '.').strip()
-                                        return float(txt)
-                                    
-                                    # No padrão TicketLog, olhando de trás para frente na tabela:
-                                    # Última coluna -> Valor Total
-                                    # Duas colunas antes -> Quantidade de Litros
-                                    # Algumas colunas antes -> Quilometragem (KM)
-                                    
-                                    valor_total = converter_valor(colunas[-1])
-                                    litros = converter_valor(colunas[-3])
-                                    
-                                    # Para o KM, buscamos o valor numérico que fica no meio da tabela antes dos litros
-                                    km = 0.0
-                                    for celula in colunas[3:-3]:
-                                        # Remove pontos e traços para testar se é o odômetro
-                                        teste_km = celula.replace('.', '').replace('-', '').strip()
-                                        if teste_km.isdigit():
-                                            km = abs(converter_valor(celula))
-                                            break
-                                    
-                                    dados_extraidos.append({
-                                        "Placa": placa,
-                                        "Data": colunas[0].split()[0], # Pega apenas a data, ignora a hora
-                                        "Litros": litros,
-                                        "Valor Total": valor_total,
-                                        "Km": km
-                                    })
-                                except Exception as e:
-                                    continue # Se uma linha falhar na conversão, não quebra o arquivo
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros importados com precisão:")
+                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros extraídos do relatório:")
                 st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Gravar no Banco e Atualizar Frota"):
+                if st.button("Confirmar e Salvar no Banco"):
                     for _, row in df_ticket.iterrows():
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
@@ -235,12 +241,13 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Sincronização com o banco de dados realizada com sucesso!")
+                    st.success("Dados salvos e odômetros sincronizados com sucesso!")
             else:
-                st.error("Não encontramos dados estruturados em tabela nesse arquivo. O PDF foi gerado direto do sistema ou é um documento escaneado/foto?")
+                st.error("Não foi possível mapear as colunas. O PDF pode estar protegido ou o padrão de espaçamento é diferente.")
                 
         except Exception as e:
-            st.error(f"Erro no motor de leitura de tabelas: {e}")            
+            st.error(f"Erro no processamento do arquivo: {e}")
+            
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
     st.title("🔧 Manutenção & Ordens de Serviço (O.S.)")
