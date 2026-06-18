@@ -143,80 +143,98 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO PDF) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO PDF ADAPTADA) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Faça o upload do relatório original em **PDF** exportado do portal TicketLog.")
+    st.markdown("Análise inteligente baseada no padrão visual do relatório Ticket Log.")
     
     import pdfplumber
     import re
 
-    uploaded_file = st.file_uploader("Escolha o arquivo PDF da TicketLog", type=['pdf'])
+    uploaded_file = st.file_uploader("Escolha o arquivo PDF original da TicketLog", type=['pdf'])
     
     if uploaded_file is not None:
         try:
             dados_extraidos = []
             
-            # Abre o PDF na memória
             with pdfplumber.open(uploaded_file) as pdf:
-                for pagina in pdf.pages:
+                for num_pag, pagina in enumerate(pdf.pages, 1):
                     texto = pagina.extract_text()
                     if not texto:
                         continue
                     
-                    # Divide o texto por linhas
                     linhas = texto.split('\n')
-                    
                     for linha in linhas:
-                        # Expressão regular para identificar uma linha de abastecimento típica da TicketLog
-                        # Procura por padrões de Placa (AAA-1234 ou AAA1B23) + Data + Valores
-                        if re.search(r'[A-Z]{3}-?\d[A-Z0-9]\d{2}', linha):
-                            # Divide a linha por espaços para capturar as colunas
+                        # Padrão: Começa com Data (DD/MM/AAAA HH:MM) seguido pelo número do cartão (6035...)
+                        # Isso garante que estamos lendo apenas as linhas de transações reais
+                        if re.search(r'^\d{2}/\d{2}/\d{4}\s\d{2}:\d{2}\s+6035', linha):
                             partes = linha.split()
                             
-                            # Exemplo básico de captura posicional (ajuste conforme a ordem do seu PDF)
-                            # Geralmente a placa é um dos primeiros itens e o valor/KM ficam no fim
                             try:
-                                placa_pdf = partes[0]
-                                data_pdf = partes[1] # Formato DD/MM/AAAA
+                                # Com base no padrão do relatório:
+                                data_transacao = partes[0]  # DD/MM/AAAA
+                                # partes[1] seria a hora (HH:MM)
+                                # partes[2] seria o número do cartão (6035...)
                                 
-                                # Limpeza de valores (remove R$, pontos de milhar e troca vírgula por ponto)
-                                valor_total_limpo = partes[-2].replace('R$', '').replace('.', '').replace(',', '.')
-                                km_limpo = partes[-1].replace('.', '').replace(',', '.')
+                                # A placa normalmente é o 4º elemento (índice 3)
+                                placa = partes[3].upper().replace('-', '')
                                 
+                                # Os valores financeiros e numéricos ficam sempre no final da linha
+                                valor_total_bruto = partes[-1]  # Último item
+                                valor_litro_bruto = partes[-2]  # Penúltimo item
+                                litros_bruto = partes[-3]       # Antepenúltimo item
+                                km_bruto = partes[-5]           # KM fica antes do tipo de combustível
+                                
+                                # --- FUNÇÃO INTERNA PARA LIMPEZA DE TEXTO PARA FLOAT ---
+                                def limpar_num(texto_num):
+                                    # Remove R$, pontos de milhar e troca vírgula por ponto
+                                    txt = texto_num.replace('R$', '').replace('.', '').replace(',', '.').strip()
+                                    return float(txt)
+
+                                km = limpar_num(km_bruto)
+                                litros = limpar_num(litros_bruto)
+                                valor_total = limpar_num(valor_total_bruto)
+                                
+                                # Regra de segurança: Se o KM vier negativo por erro de digitação da TicketLog, 
+                                # convertemos para positivo para não quebrar o banco de dados
+                                if km < 0:
+                                    km = abs(km)
+
                                 dados_extraidos.append({
-                                    "Placa": placa_pdf,
-                                    "Data": data_pdf,
-                                    "Litros": 0.0, # Se não achar os litros exatos, salvamos zerado ou estimamos
-                                    "Valor Total": float(valor_total_limpo),
-                                    "Km": float(km_limpo)
+                                    "Placa": placa,
+                                    "Data": data_transacao,
+                                    "Litros": litros,
+                                    "Valor Total": valor_total,
+                                    "Km": km
                                 })
-                            except:
-                                continue # Ignora linhas que não encaixam no padrão numérico
+                            except Exception as erro_linha:
+                                # Se alguma linha falhar no recorte, continua para a próxima sem travar
+                                continue
             
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.write("### Dados identificados no PDF:")
-                st.dataframe(df_ticket)
+                st.write(f"### Mapeamento Concluído: {len(df_ticket)} transações encontradas")
+                st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Confirmar e Salvar no Banco de Dados"):
+                if st.button("Salvar Abastecimentos e Atualizar KMs da Frota"):
                     for _, row in df_ticket.iterrows():
-                        # Salva no banco de dados
+                        # Insere o registro financeiro e de consumo
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
                                  (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog PDF"), 
                                  is_select=False)
                         
-                        # Atualiza a quilometragem do veículo se o KM do PDF for maior que o atual
+                        # Atualiza o odômetro do veículo caso o KM do PDF seja mais recente/maior
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
                         
-                    st.success(f"Sucesso! {len(df_ticket)} abastecimentos importados do PDF e KMs atualizados.")
+                    st.success("Tudo pronto! Relatório processado e armazenado com sucesso.")
             else:
-                st.warning("Nenhum padrão de abastecimento foi reconhecido no PDF. Verifique se o arquivo não é digitalizado (imagem).")
+                st.error("Não encontramos transações no formato padrão. Certifique-se de que o PDF não é uma imagem digitalizada escaneada.")
                 
         except Exception as e:
-            st.error(f"Erro ao processar o PDF: {e}")
+            st.error(f"Falha crítica no processador de arquivos: {e}")
+            
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
     st.title("🔧 Manutenção & Ordens de Serviço (O.S.)")
