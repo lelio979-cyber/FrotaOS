@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO COMPATÍVEL BASEADA EM REGEX REGRESSIVO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO ADAPTATIVA POSICIONAL) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador de alta precisão imune a desalinhamentos de colunas.")
+    st.markdown("Processador adaptativo focado na limpeza prévia de caracteres especiais.")
     
     import pdfplumber
     import re
@@ -170,42 +170,52 @@ elif menu == "⛽ Importar TicketLog":
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                         
-                        # 2. Localiza a Placa em qualquer lugar da linha (Padrão Antigo ou Mercosul)
+                        # 2. Localiza a Placa (Padrão Antigo ou Mercosul)
                         busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', linha, re.IGNORECASE)
                         if not busca_placa:
                             continue
                         placa = busca_placa.group(1).upper().replace('-', '')
                         
                         try:
-                            # 3. EXTRAÇÃO CIRÚRGICA DOS TRÊS VALORES DO FIM DA LINHA (Litros, Preço, Total)
-                            # Esse regex captura os 3 últimos blocos numéricos com vírgula da linha
-                            valores_finais = re.findall(r'[\d\.,]+', linha)
+                            # 3. Limpeza prévia da linha: remove R$ e substitui pontos/vírgulas para padrão americano
+                            linha_limpa = linha.replace('R$', '').strip()
                             
-                            if len(valores_finais) < 4:
+                            # Captura TODOS os números decimais ou inteiros da linha (incluindo os com vírgula)
+                            # Esse regex identifica padrões como: 150.000 , 45,50 , 6,19 , etc.
+                            numeros = re.findall(r'-?[\d\.,]+', linha_limpa)
+                            
+                            # Filtra apenas os blocos que possuem cara de números financeiros ou odômetros 
+                            # (remove strings de data ou números de cartão muito longos)
+                            numeros_validos = []
+                            for num in numeros:
+                                # Ignora formato de data (contém /) e número do cartão (com mais de 10 dígitos)
+                                if '/' not in num and len(num.replace('.', '').replace(',', '')) < 10:
+                                    numeros_validos.append(num)
+                            
+                            if len(numeros_validos) < 4:
                                 continue
+                            
+                            # Função padrão para conversão limpa em Float
+                            def para_float(txt):
+                                txt = txt.replace('.', '').replace(',', '.').strip()
+                                return float(txt)
+                            
+                            # No fim da linha da Ticket Log, a ordem dos últimos 3 números é sempre:
+                            # [Litros] [Preço por Litro] [Valor Total]
+                            valor_total = para_float(numeros_validos[-1])
+                            litros = para_float(numeros_validos[-3])
+                            
+                            # O KM (Odômetro) é o número válido que fica logo antes do nome do combustível.
+                            # Na lista de números úteis, ele costuma ser o 4º ou 5º de trás para frente.
+                            km_bruto = numeros_validos[-4]
+                            
+                            # Se por acaso o índice do preço médio entrar na conta, recuamos mais uma posição
+                            if km_bruto == numeros_validos[-3] or para_float(km_bruto) < 10: 
+                                km_bruto = numeros_validos[-5]
                                 
-                            # Limpador de números padrão PT-BR
-                            def limpar_num(txt):
-                                return float(txt.replace('.', '').replace(',', '.').strip())
+                            km = abs(para_float(km_bruto))
                             
-                            # Os valores financeiros estão garantidos na ponta direita do relatório
-                            valor_total = limpar_num(valores_finais[-1]) # Último número da linha
-                            # valores_finais[-2] é o preço unitário do litro
-                            litros = limpar_num(valores_finais[-3])      # Terceiro número de trás para frente
-                            
-                            # 4. CAPTURA DO KM (ODÔMETRO)
-                            # O KM é o número que vem logo antes do texto do produto (combustível).
-                            # Vamos extrair o texto que está entre a Placa e o Bloco de Litros/Valores
-                            texto_meio = linha[busca_placa.end():].strip()
-                            
-                            # Buscamos o primeiro número (que pode ser negativo) nesse bloco do meio
-                            busca_km = re.search(r'(-?[\d\.]+),?\d*', texto_meio)
-                            if busca_km:
-                                km = abs(limpar_num(busca_km.group(1)))
-                            else:
-                                km = 0.0
-                            
-                            # Pega apenas a data sem a hora
+                            # Pega a data de transação (primeiro elemento da linha)
                             data_transacao = linha.split()[0]
                             
                             dados_extraidos.append({
@@ -216,6 +226,7 @@ elif menu == "⛽ Importar TicketLog":
                                 "Km": km
                             })
                         except:
+                            # Qualquer erro de leitura nesta linha passa para a próxima silenciosamente
                             continue
 
             if dados_extraidos:
@@ -232,12 +243,12 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados integrados e salvos com sucesso!")
+                    st.success("Banco de dados atualizado com sucesso!")
             else:
-                st.error("O motor de busca não encontrou os padrões de valores na linha. Verifique se o PDF está com o texto selecionável.")
+                st.error("Nenhum dado pôde ser extraído. Certifique-se de que o PDF inserido é o arquivo digital original baixado do portal Ticket Log.")
                 
         except Exception as e:
-            st.error(f"Erro crítico: {e}")
+            st.error(f"Erro crítico na leitura do arquivo: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
