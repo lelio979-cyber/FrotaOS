@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO ULTRA-BLINDADA FATIAMENTO FIXO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO DESMONTAGEM CIRÚRGICA) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador por corte geométrico de strings contínuas.")
+    st.markdown("Processador adaptativo focado na desconstrução de blocos numéricos aglutinados.")
     
     import pdfplumber
     import re
@@ -167,65 +167,70 @@ elif menu == "⛽ Importar TicketLog":
                     texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
                     
                     for linha in texto.split('\n'):
-                        linha = linha.strip().replace('R$', '').replace(' ', '') # Remove TODOS os espaços e R$
+                        linha = linha.strip().replace('R$', '').replace(' ', '')
                         
-                        # 1. Filtro: Precisa ter data no início (agora grudada com a hora)
+                        # 1. Filtro: Precisa ter data no início
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
-                        # 2. Localiza a Placa (Mercosul ou Antiga)
+                        # 2. Localiza a Placa
                         busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha, re.IGNORECASE)
                         if not busca_placa:
                             continue
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. FATIAMENTO GEOMÉTRICO DO FINAL DA LINHA GRUDADA
-                            # Ex de fim de linha: 44,115,89255,27
-                            # O valor total são sempre os últimos 6 caracteres (ex: 255,27) ou até encontrar a vírgula
+                            # 3. IDENTIFICAÇÃO DOS GRUPOS PELO PADRÃO DE VÍRGULAS
+                            # O bloco final segue sempre a geometria: KM (com ponto) + Litros(,xx) + Preço(,xx) + Total(,xx)
+                            # Esse regex abaixo localiza a estrutura exata mesmo que tudo esteja colado!
+                            match_valores = re.search(r'(-?[\d\.]+)(\d+,\d{2})(\d+,\d+)(\d+,\d{2})$', linha)
                             
-                            # Vamos quebrar a string pelas últimas duas vírgulas de forma cirúrgica
-                            partes_valores = re.findall(r'\d+,\d{2}', linha)
+                            # Se a emenda esconder o padrão de 2 casas do preço, usamos uma busca posicional por vírgulas
+                            if not match_valores:
+                                pos_virgulas = [i for i, c in enumerate(linha) if c == ',']
+                                if len(pos_virgulas) >= 3:
+                                    # Recorta o valor total (da última vírgula até o fim)
+                                    v_total_txt = linha[pos_virgulas[-1]-4 : pos_virgulas[-1]+3]
+                                    v_total_txt = re.search(r'[\d,]+', v_total_txt).group()
+                                    
+                                    # Recorta os litros (da antepenúltima vírgula)
+                                    v_litros_txt = linha[pos_virgulas[-3]-3 : pos_virgulas[-3]+3]
+                                    v_litros_txt = re.search(r'[\d,]+', v_litros_txt).group()
+                                    
+                                    # Isola o KM entre a placa e o começo dos litros
+                                    idx_valores = linha.find(v_litros_txt)
+                                    texto_km = linha[busca_placa.end():idx_valores]
+                                    v_km_txt = re.search(r'(-?[\d\.]+)', texto_km).group(1)
+                                else:
+                                    continue
+                            else:
+                                v_km_txt = match_valores.group(1)
+                                v_litros_txt = match_valores.group(2)
+                                v_total_txt = match_valores.group(4)
                             
-                            if len(partes_valores) >= 3:
-                                # Pega os valores reais mapeados pelo Regex de decimais puros
-                                txt_total = partes_valores[-1]
-                                txt_litros = partes_valores[-3]
+                            # Conversão segura para Float
+                            def formatar(txt):
+                                return float(txt.replace('.', '').replace(',', '.').strip())
                                 
-                                valor_total = float(txt_total.replace(',', '.'))
-                                litros = float(txt_litros.replace(',', '.'))
-                                
-                                # 4. CAPTURA DO KM (ODÔMETRO)
-                                # O KM é tudo o que está entre a placa e o primeiro número com vírgula do final
-                                idx_placa_fim = busca_placa.end()
-                                idx_valores_inicio = linha.find(txt_litros)
-                                
-                                texto_meio = linha[idx_placa_fim:idx_valores_inicio]
-                                
-                                # Remove o nome do motorista/combustível mantendo apenas os números e pontos do KM
-                                km_numeros = re.findall(r'-?[\d\.]+', texto_meio)
-                                
-                                km = 0.0
-                                for bloco in km_numeros:
-                                    if '.' in bloco or len(bloco) >= 3:
-                                        km = abs(float(bloco.replace('.', '')))
-                                        break
-                                
-                                data_transacao = linha[:10]
-                                
-                                dados_extraidos.append({
-                                    "Placa": placa,
-                                    "Data": data_transacao,
-                                    "Litros": litros,
-                                    "Valor Total": valor_total,
-                                    "Km": km
-                                })
+                            valor_total = formatar(v_total_txt)
+                            litros = formatar(v_litros_txt)
+                            km = abs(formatar(v_km_txt))
+                            
+                            data_transacao = linha[:10]
+                            
+                            dados_extraidos.append({
+                                "Placa": placa,
+                                "Data": data_transacao,
+                                "Litros": litros,
+                                "Valor Total": valor_total,
+                                "Km": km
+                            })
                         except:
                             continue
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Concluído com sucesso! {len(df_ticket)} registros integrados.")
+                st.success(f"🎉 Perfeito! {len(df_ticket)} registros importados com sucesso.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -239,7 +244,7 @@ elif menu == "⛽ Importar TicketLog":
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
                     st.success("Dados salvos e odômetros sincronizados!")
             else:
-                st.error("Erro estrutural: O motor não conseguiu isolar as strings grudadas.")
+                st.error("Inconsistência na leitura. O formato do arquivo PDF não pôde ser decodificado pelos motores de busca.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
