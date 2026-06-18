@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO DESMONTAGEM CIRÚRGICA) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA RESISTÊNCIA) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador adaptativo focado na desconstrução de blocos numéricos aglutinados.")
+    st.markdown("Processador de fluxo contínuo imune a aglutinação de decimais.")
     
     import pdfplumber
     import re
@@ -169,68 +169,64 @@ elif menu == "⛽ Importar TicketLog":
                     for linha in texto.split('\n'):
                         linha = linha.strip().replace('R$', '').replace(' ', '')
                         
-                        # 1. Filtro: Precisa ter data no início
+                        # 1. Filtro: Linha deve começar com data
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
-                        # 2. Localiza a Placa
+                        # 2. Localiza a Placa Mercosul/Nacional
                         busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha, re.IGNORECASE)
                         if not busca_placa:
                             continue
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. IDENTIFICAÇÃO DOS GRUPOS PELO PADRÃO DE VÍRGULAS
-                            # O bloco final segue sempre a geometria: KM (com ponto) + Litros(,xx) + Preço(,xx) + Total(,xx)
-                            # Esse regex abaixo localiza a estrutura exata mesmo que tudo esteja colado!
-                            match_valores = re.search(r'(-?[\d\.]+)(\d+,\d{2})(\d+,\d+)(\d+,\d{2})$', linha)
+                            # 3. EXTRAÇÃO CIRÚRGICA DE TRÁS PARA FRENTE
+                            # Vamos isolar o bloco final que contém os números após o nome do motorista
+                            # Identificamos o último traço ou ponto que define o KM
+                            match_valores = re.search(r'(-?\d+\.\d+.*)$', linha)
                             
-                            # Se a emenda esconder o padrão de 2 casas do preço, usamos uma busca posicional por vírgulas
-                            if not match_valores:
-                                pos_virgulas = [i for i, c in enumerate(linha) if c == ',']
-                                if len(pos_virgulas) >= 3:
-                                    # Recorta o valor total (da última vírgula até o fim)
-                                    v_total_txt = linha[pos_virgulas[-1]-4 : pos_virgulas[-1]+3]
-                                    v_total_txt = re.search(r'[\d,]+', v_total_txt).group()
-                                    
-                                    # Recorta os litros (da antepenúltima vírgula)
-                                    v_litros_txt = linha[pos_virgulas[-3]-3 : pos_virgulas[-3]+3]
-                                    v_litros_txt = re.search(r'[\d,]+', v_litros_txt).group()
-                                    
-                                    # Isola o KM entre a placa e o começo dos litros
-                                    idx_valores = linha.find(v_litros_txt)
-                                    texto_km = linha[busca_placa.end():idx_valores]
-                                    v_km_txt = re.search(r'(-?[\d\.]+)', texto_km).group(1)
-                                else:
-                                    continue
-                            else:
-                                v_km_txt = match_valores.group(1)
-                                v_litros_txt = match_valores.group(2)
-                                v_total_txt = match_valores.group(4)
-                            
-                            # Conversão segura para Float
-                            def formatar(txt):
-                                return float(txt.replace('.', '').replace(',', '.').strip())
+                            if match_valores:
+                                bloco_numerico = match_valores.group(1) # Ex: -31.34444,115,89255,27
                                 
-                            valor_total = formatar(v_total_txt)
-                            litros = formatar(v_litros_txt)
-                            km = abs(formatar(v_km_txt))
-                            
-                            data_transacao = linha[:10]
-                            
-                            dados_extraidos.append({
-                                "Placa": placa,
-                                "Data": data_transacao,
-                                "Litros": litros,
-                                "Valor Total": valor_total,
-                                "Km": km
-                            })
+                                # Encontra as posições de todas as vírgulas dentro deste bloco
+                                pos_virgulas = [i for i, c in enumerate(bloco_numerico) if c == ',']
+                                
+                                if len(pos_virgulas) >= 2:
+                                    # O Valor Total está sempre após a última vírgula (e inclui os 2 dígitos antes dela)
+                                    v_total_idx = pos_virgulas[-1]
+                                    txt_total = bloco_numerico[v_total_idx-4 : v_total_idx+3]
+                                    txt_total = re.search(r'[\d,]+', txt_total).group()
+                                    
+                                    # Os Litros estão associados à primeira vírgula do bloco colado
+                                    v_litros_idx = pos_virgulas[0]
+                                    txt_litros = bloco_numerico[v_litros_idx-2 : v_litros_idx+3]
+                                    txt_litros = re.search(r'[\d,]+', txt_litros).group()
+                                    
+                                    # O KM é a parte inicial até o primeiro ponto encontrado no bloco
+                                    txt_km = bloco_numerico.split(',')[0] # Pega o primeiro segmento (-31.34444 por ex)
+                                    # Remove os decimais que colaram no KM (deixando apenas o odômetro principal antes do ponto)
+                                    txt_km_limpo = txt_km.split('.')[0].replace('-', '').strip()
+                                    
+                                    # Conversão limpa para tipos numéricos
+                                    valor_total = float(txt_total.replace(',', '.'))
+                                    litros = float(txt_litros.replace(',', '.'))
+                                    km = float(txt_km_limpo) if txt_km_limpo.isdigit() else 0.0
+                                    
+                                    data_transacao = linha[:10]
+                                    
+                                    dados_extraidos.append({
+                                        "Placa": placa,
+                                        "Data": data_transacao,
+                                        "Litros": litros,
+                                        "Valor Total": valor_total,
+                                        "Km": km
+                                    })
                         except:
                             continue
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Perfeito! {len(df_ticket)} registros importados com sucesso.")
+                st.success(f"🎉 Sucesso! {len(df_ticket)} registros decodificados e isolados.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -242,9 +238,9 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados salvos e odômetros sincronizados!")
+                    st.success("Dados integrados e salvos com sucesso!")
             else:
-                st.error("Inconsistência na leitura. O formato do arquivo PDF não pôde ser decodificado pelos motores de busca.")
+                st.error("Erro de segmentação: O motor não conseguiu separar a string contínua.")
                 with st.expander("Visualizar texto cru capturado (Debug)"):
                     st.code(texto_cru_debug[:3000])
                     
