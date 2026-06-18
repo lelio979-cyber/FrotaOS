@@ -143,12 +143,12 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO PYPDF ULTRA-COMPATÍVEL) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA COMPATIBILIDADE) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador alternativo via `pypdf` com painel de diagnóstico de texto.")
+    st.markdown("Processador adaptativo com separação de strings coladas.")
     
-    import pypdf
+    import pdfplumber
     import re
 
     uploaded_file = st.file_uploader("Escolha o arquivo PDF original da TicketLog", type=['pdf'])
@@ -156,82 +156,80 @@ elif menu == "⛽ Importar TicketLog":
     if uploaded_file is not None:
         try:
             dados_extraidos = []
-            texto_completo_diagnostico = ""
+            texto_cru_debug = ""
             
-            # Lendo o PDF usando o motor alternativo pypdf
-            leitor = pypdf.PdfReader(uploaded_file)
-            
-            for num_pag, pagina in enumerate(leitor.pages, 1):
-                texto_pagina = pagina.extract_text()
-                if not texto_pagina:
-                    continue
-                
-                texto_completo_diagnostico += f"\n--- PÁGINA {num_pag} ---\n" + texto_pagina
-                
-                for linha in texto_pagina.split('\n'):
-                    linha = linha.strip()
-                    
-                    # 1. Filtro: A linha PRECISA conter uma data válida (DD/MM/AAAA)
-                    if not re.search(r'\d{2}/\d{2}/\d{4}', linha):
+            with pdfplumber.open(uploaded_file) as pdf:
+                for num_pag, pagina in enumerate(pdf.pages, 1):
+                    texto = pagina.extract_text()
+                    if not texto:
                         continue
                     
-                    # 2. Localiza a Placa (Padrão Antigo ou Mercosul)
-                    busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', linha, re.IGNORECASE)
-                    if not busca_placa:
-                        continue
-                    placa = busca_placa.group(1).upper().replace('-', '')
+                    texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
                     
-                    try:
-                        # Limpa caracteres de ruído
-                        linha_limpa = linha.replace('R$', '').strip()
+                    for linha in texto.split('\n'):
+                        linha = linha.strip()
                         
-                        # Captura todos os blocos de números (incluindo decimais com ponto ou vírgula)
-                        numeros = re.findall(r'-?[\d\.,]+', linha_limpa)
-                        
-                        # Filtra apenas os números que fazem sentido operacional (remove datas e dados do cartão)
-                        numeros_validos = []
-                        for n in numeros:
-                            if '/' not in n and len(n.replace('.','').replace(',','')) < 9:
-                                numeros_validos.append(n)
-                                
-                        if len(numeros_validos) < 3:
+                        # 1. Filtro: Precisa ter uma data
+                        if not re.search(r'\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
-                        def para_float(txt):
-                            return float(txt.replace('.', '').replace(',', '.').strip())
+                        # 2. Localiza a Placa
+                        busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', linha, re.IGNORECASE)
+                        if not busca_placa:
+                            continue
+                        placa = busca_placa.group(1).upper().replace('-', '')
                         
-                        # Captura cirúrgica baseada na ponta direita da linha
-                        valor_total = para_float(numeros_validos[-1])
-                        litros = para_float(numeros_validos[-3])
-                        
-                        # Identificação adaptativa do KM (Odômetro)
-                        km_bruto = numeros_validos[-4]
-                        if para_float(km_bruto) < 10 or km_bruto == numeros_validos[-3]:
-                            km_bruto = numeros_validos[-5]
+                        try:
+                            # 3. Limpeza de emergência para separar números grudados em letras (ex: 140,00OLEO -> 140,00 OLEO)
+                            linha_ajustada = re.sub(r'([\d,]+)([A-Za-z]+)', r'\1 \2', linha)
+                            linha_ajustada = re.sub(r'([A-Za-z]+)([\d,]+)', r'\1 \2', linha_ajustada)
+                            linha_ajustada = linha_ajustada.replace('R$', '')
                             
-                        km = abs(para_float(km_bruto))
-                        
-                        # Captura a data da transação
-                        busca_data = re.search(r'(\d{2}/\d{2}/\d{4})', linha)
-                        data_transacao = busca_data.group(1) if busca_data else "00/00/0000"
-                        
-                        dados_extraidos.append({
-                            "Placa": placa,
-                            "Data": data_transacao,
-                            "Litros": litros,
-                            "Valor Total": valor_total,
-                            "Km": km
-                        })
-                    except:
-                        continue
+                            # Pega todos os números isolados da linha
+                            numeros = re.findall(r'-?[\d\.,]+', linha_ajustada)
+                            
+                            # Filtra descartando datas e cartões
+                            numeros_validos = []
+                            for n in numeros:
+                                if '/' not in n and len(n.replace('.','').replace(',','')) < 9:
+                                    numeros_validos.append(n)
+                            
+                            if len(numeros_validos) < 3:
+                                continue
+                                
+                            def para_float(txt):
+                                return float(txt.replace('.', '').replace(',', '.').strip())
+                            
+                            # No final da linha limpa, os últimos valores são estruturalmente:
+                            # ... [KM] ... [LITROS] [PREÇO UNITÁRIO] [VALOR TOTAL]
+                            valor_total = para_float(numeros_validos[-1])
+                            litros = para_float(numeros_validos[-3])
+                            
+                            # Identifica o KM de forma segura (geralmente o número antes do combustível)
+                            km_bruto = numeros_validos[-4]
+                            if para_float(km_bruto) < 15 or km_bruto == numeros_validos[-3]:
+                                km_bruto = numeros_validos[-5]
+                                
+                            km = abs(para_float(km_bruto))
+                            
+                            data_transacao = re.search(r'(\d{2}/\d{2}/\d{4})', linha).group(1)
+                            
+                            dados_extraidos.append({
+                                "Placa": placa,
+                                "Data": data_transacao,
+                                "Litros": litros,
+                                "Valor Total": valor_total,
+                                "Km": km
+                            })
+                        except:
+                            continue
 
-            # --- EXIBIÇÃO DOS RESULTADOS ---
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 {len(df_ticket)} registros encontrados com sucesso!")
+                st.success(f"🎉 {len(df_ticket)} registros mapeados e corrigidos com sucesso!")
                 st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Gravar no Banco e Sincronizar Frotas"):
+                if st.button("Confirmar e Salvar no Banco"):
                     for _, row in df_ticket.iterrows():
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
@@ -240,20 +238,14 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Tudo salvo com sucesso!")
+                    st.success("Dados salvos e frotas atualizadas!")
             else:
-                st.error("Não foi possível extrair dados estruturados deste PDF automaticamente.")
-                
-                # --- ABA DE DIAGNÓSTICO PARA O USUÁRIO ---
-                with st.expander("🔍 Clique aqui para ver o Diagnóstico Técnico do seu PDF"):
-                    st.warning("Abaixo está o texto cru que o Python conseguiu ler de dentro do seu arquivo:")
-                    if texto_completo_diagnostico.strip() == "":
-                        st.code("O arquivo retornou TOTALMENTE VAZIO. O seu PDF é uma imagem (scaneado) ou está protegido contra leitura por código.")
-                    else:
-                        st.code(texto_completo_diagnostico[:3000]) # Mostra os primeiros 3000 caracteres
-
+                st.error("Não foi possível processar automaticamente.")
+                with st.expander("Visualizar texto cru capturado (Debug)"):
+                    st.code(texto_cru_debug[:3000])
+                    
         except Exception as e:
-            st.error(f"Falha no motor pypdf: {e}")
+            st.error(f"Erro no motor de processamento: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
