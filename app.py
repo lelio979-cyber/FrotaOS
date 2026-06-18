@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO PDF ADAPTADA) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO PDF ULTRA-ROBUSTA) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Análise inteligente baseada no padrão visual do relatório Ticket Log.")
+    st.markdown("Processador de PDF com tolerância a falhas e espaçamentos dinâmicos.")
     
     import pdfplumber
     import re
@@ -157,49 +157,45 @@ elif menu == "⛽ Importar TicketLog":
         try:
             dados_extraidos = []
             
+            # Expressão regular avançada para capturar os dados indepedente de espaçamento
+            # Explicação: Data | Cartão | Placa | (Ignora Motorista/Produto) | KM | Litros | PreçoL | ValorTotal
+            padrao_linha = re.compile(
+                r'(\d{2}/\d{2}/\d{4})\s+\d{2}:\d{2}\s+'       # 1. Data (Ignora hora)
+                r'6035\d*\s+'                                  # Número do cartão
+                r'([A-Z]{3}-?[A-Z0-9]\d{2})\s+'                # 2. Placa (Mercosul ou Antiga)
+                r'.+?'                                         # Texto variável (Motorista + Produto)
+                r'(-?[\d\.,]+)\s+'                             # 3. KM (Permite negativo)
+                r'[\d\.,]+\s+'                                 # Preço Médio (Ignorado)
+                r'([\d\.,]+)\s+'                               # 4. Litros
+                r'[\d\.,]+\s+'                                 # Valor por Litro (Ignorado)
+                r'([\d\.,]+)$'                                 # 5. Valor Total (Fim da linha)
+            )
+
             with pdfplumber.open(uploaded_file) as pdf:
-                for num_pag, pagina in enumerate(pdf.pages, 1):
+                for pagina in pdf.pages:
                     texto = pagina.extract_text()
                     if not texto:
                         continue
                     
-                    linhas = texto.split('\n')
-                    for linha in linhas:
-                        # Padrão: Começa com Data (DD/MM/AAAA HH:MM) seguido pelo número do cartão (6035...)
-                        # Isso garante que estamos lendo apenas as linhas de transações reais
-                        if re.search(r'^\d{2}/\d{2}/\d{4}\s\d{2}:\d{2}\s+6035', linha):
-                            partes = linha.split()
-                            
+                    for linha in texto.split('\n'):
+                        linha = linha.strip()
+                        match = padrao_linha.search(linha)
+                        
+                        if match:
                             try:
-                                # Com base no padrão do relatório:
-                                data_transacao = partes[0]  # DD/MM/AAAA
-                                # partes[1] seria a hora (HH:MM)
-                                # partes[2] seria o número do cartão (6035...)
+                                # Captura os grupos da expressão regular
+                                data_transacao = match.group(1)
+                                placa = match.group(2).upper().replace('-', '')
                                 
-                                # A placa normalmente é o 4º elemento (índice 3)
-                                placa = partes[3].upper().replace('-', '')
+                                # Limpeza e conversão dos números de padrão PT-BR para Float
+                                def limpar_val(v):
+                                    v = v.replace('.', '').replace(',', '.').strip()
+                                    return float(v)
                                 
-                                # Os valores financeiros e numéricos ficam sempre no final da linha
-                                valor_total_bruto = partes[-1]  # Último item
-                                valor_litro_bruto = partes[-2]  # Penúltimo item
-                                litros_bruto = partes[-3]       # Antepenúltimo item
-                                km_bruto = partes[-5]           # KM fica antes do tipo de combustível
+                                km = abs(limpar_val(match.group(3))) # abs() remove o sinal de negativo automaticamente
+                                litros = limpar_val(match.group(4))
+                                valor_total = limpar_val(match.group(5))
                                 
-                                # --- FUNÇÃO INTERNA PARA LIMPEZA DE TEXTO PARA FLOAT ---
-                                def limpar_num(texto_num):
-                                    # Remove R$, pontos de milhar e troca vírgula por ponto
-                                    txt = texto_num.replace('R$', '').replace('.', '').replace(',', '.').strip()
-                                    return float(txt)
-
-                                km = limpar_num(km_bruto)
-                                litros = limpar_num(litros_bruto)
-                                valor_total = limpar_num(valor_total_bruto)
-                                
-                                # Regra de segurança: Se o KM vier negativo por erro de digitação da TicketLog, 
-                                # convertemos para positivo para não quebrar o banco de dados
-                                if km < 0:
-                                    km = abs(km)
-
                                 dados_extraidos.append({
                                     "Placa": placa,
                                     "Data": data_transacao,
@@ -207,33 +203,29 @@ elif menu == "⛽ Importar TicketLog":
                                     "Valor Total": valor_total,
                                     "Km": km
                                 })
-                            except Exception as erro_linha:
-                                # Se alguma linha falhar no recorte, continua para a próxima sem travar
-                                continue
-            
+                            except:
+                                continue # Se falhar a conversão de um dado, não quebra o resto do arquivo
+
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.write(f"### Mapeamento Concluído: {len(df_ticket)} transações encontradas")
+                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros encontrados no formato correto.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Salvar Abastecimentos e Atualizar KMs da Frota"):
+                if st.button("Confirmar e Registrar no Banco"):
                     for _, row in df_ticket.iterrows():
-                        # Insere o registro financeiro e de consumo
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
                                  (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog PDF"), 
                                  is_select=False)
                         
-                        # Atualiza o odômetro do veículo caso o KM do PDF seja mais recente/maior
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                        
-                    st.success("Tudo pronto! Relatório processado e armazenado com sucesso.")
+                    st.success("Dados salvos e odômetros sincronizados!")
             else:
-                st.error("Não encontramos transações no formato padrão. Certifique-se de que o PDF não é uma imagem digitalizada escaneada.")
+                st.error("Não foi possível extrair dados estruturados deste PDF. Verifique se o formato bate com a imagem enviada.")
                 
         except Exception as e:
-            st.error(f"Falha crítica no processador de arquivos: {e}")
+            st.error(f"Erro crítico no processamento: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
