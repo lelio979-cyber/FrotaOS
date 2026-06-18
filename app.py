@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO COMPATÍVEL COM TEXTO ALINHADO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO COMPATÍVEL BASEADA EM REGEX REGRESSIVO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador otimizado para o layout de texto alinhado da Ticket Log.")
+    st.markdown("Processador de alta precisão imune a desalinhamentos de colunas.")
     
     import pdfplumber
     import re
@@ -170,66 +170,57 @@ elif menu == "⛽ Importar TicketLog":
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                         
-                        # 2. Divide a linha usando o padrão de múltiplos espaços (2 ou mais espaços juntos)
-                        # Isso separa as colunas exatamente como o olho humano vê no relatório
-                        partes = re.split(r'\s{2,}', linha)
+                        # 2. Localiza a Placa em qualquer lugar da linha (Padrão Antigo ou Mercosul)
+                        busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', linha, re.IGNORECASE)
+                        if not busca_placa:
+                            continue
+                        placa = busca_placa.group(1).upper().replace('-', '')
                         
-                        # Uma linha de transação completa da TicketLog geralmente tem entre 7 e 10 colunas separadas assim
-                        if len(partes) >= 6:
-                            try:
-                                # Data/Hora é a primeira coluna
-                                data_transacao = partes[0].split()[0] # Pega só a data, ignora a hora se houver
-                                
-                                # A segunda coluna é o cartão (ex: 6035...) e a terceira costuma ser a Placa
-                                # Vamos achar a placa pelo formato dela em qualquer lugar das primeiras colunas
-                                placa = None
-                                for p in partes[1:4]:
-                                    busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', p, re.IGNORECASE)
-                                    if busca_placa:
-                                        placa = busca_placa.group(1).upper().replace('-', '')
-                                        break
-                                
-                                if not placa:
-                                    continue
-                                
-                                # Função para limpar os números brasileiros (R$, pontos e vírgulas)
-                                def limpar_num(txt):
-                                    txt = txt.replace('R$', '').replace('.', '').replace(',', '.').strip()
-                                    # Se houver um sinal de menos no final ou início (como o KM negativo), removemos com abs()
-                                    return float(txt)
-                                
-                                # Olhando o final da linha de trás para frente (garantido pelo alinhamento):
-                                valor_total = limpar_num(partes[-1]) # Última coluna
-                                # partes[-2] é o valor do litro
-                                litros = limpar_num(partes[-3])      # Antepenúltima coluna
-                                
-                                # O KM é a coluna que vem logo antes do Produto (Combustível)
-                                # No relatório padrão, contando de trás para frente, ele costuma ser a 5ª coluna do fim
-                                km_texto = partes[-5]
-                                # Caso o produto tenha nome composto e crie mais divisões, garantimos pegando o primeiro número válido antes dos litros
-                                if not km_texto.replace('.', '').replace('-', '').strip().isdigit():
-                                    # Se não for número puro, varre as colunas do meio para achar o odômetro
-                                    for p in partes[2:-3]:
-                                        limpo = p.replace('.', '').replace('-', '').strip()
-                                        if limpo.isdigit():
-                                            km_texto = p
-                                            break
-                                
-                                km = abs(limpar_num(km_texto))
-                                
-                                dados_extraidos.append({
-                                    "Placa": placa,
-                                    "Data": data_transacao,
-                                    "Litros": litros,
-                                    "Valor Total": valor_total,
-                                    "Km": km
-                                })
-                            except:
+                        try:
+                            # 3. EXTRAÇÃO CIRÚRGICA DOS TRÊS VALORES DO FIM DA LINHA (Litros, Preço, Total)
+                            # Esse regex captura os 3 últimos blocos numéricos com vírgula da linha
+                            valores_finais = re.findall(r'[\d\.,]+', linha)
+                            
+                            if len(valores_finais) < 4:
                                 continue
+                                
+                            # Limpador de números padrão PT-BR
+                            def limpar_num(txt):
+                                return float(txt.replace('.', '').replace(',', '.').strip())
+                            
+                            # Os valores financeiros estão garantidos na ponta direita do relatório
+                            valor_total = limpar_num(valores_finais[-1]) # Último número da linha
+                            # valores_finais[-2] é o preço unitário do litro
+                            litros = limpar_num(valores_finais[-3])      # Terceiro número de trás para frente
+                            
+                            # 4. CAPTURA DO KM (ODÔMETRO)
+                            # O KM é o número que vem logo antes do texto do produto (combustível).
+                            # Vamos extrair o texto que está entre a Placa e o Bloco de Litros/Valores
+                            texto_meio = linha[busca_placa.end():].strip()
+                            
+                            # Buscamos o primeiro número (que pode ser negativo) nesse bloco do meio
+                            busca_km = re.search(r'(-?[\d\.]+),?\d*', texto_meio)
+                            if busca_km:
+                                km = abs(limpar_num(busca_km.group(1)))
+                            else:
+                                km = 0.0
+                            
+                            # Pega apenas a data sem a hora
+                            data_transacao = linha.split()[0]
+                            
+                            dados_extraidos.append({
+                                "Placa": placa,
+                                "Data": data_transacao,
+                                "Litros": litros,
+                                "Valor Total": valor_total,
+                                "Km": km
+                            })
+                        except:
+                            continue
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros extraídos do relatório:")
+                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros importados:")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
@@ -241,12 +232,12 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados salvos e odômetros sincronizados com sucesso!")
+                    st.success("Dados integrados e salvos com sucesso!")
             else:
-                st.error("Não foi possível mapear as colunas. O PDF pode estar protegido ou o padrão de espaçamento é diferente.")
+                st.error("O motor de busca não encontrou os padrões de valores na linha. Verifique se o PDF está com o texto selecionável.")
                 
         except Exception as e:
-            st.error(f"Erro no processamento do arquivo: {e}")
+            st.error(f"Erro crítico: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
