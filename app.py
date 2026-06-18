@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO INDEX-PROOF) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO TABELA VISUAL) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador de PDF tolerante a variações de texto e colunas.")
+    st.markdown("Processador de tabelas nativo. Extrai as colunas diretamente da estrutura do relatório.")
     
     import pdfplumber
     import re
@@ -158,76 +158,75 @@ elif menu == "⛽ Importar TicketLog":
             dados_extraidos = []
             
             with pdfplumber.open(uploaded_file) as pdf:
-                for pagina in pdf.pages:
-                    texto = pagina.extract_text()
-                    if not texto:
-                        continue
+                for num_pag, pagina in enumerate(pdf.pages, 1):
+                    # Extrai a página em formato de matriz/tabela (linhas e colunas reais)
+                    tabelas = pagina.extract_tables()
                     
-                    for linha in texto.split('\n'):
-                        linha = linha.strip()
-                        
-                        # 1. Verifica se a linha começa com uma data válida
-                        if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
-                            continue
+                    for tabela in tabelas:
+                        for linha in tabela:
+                            # Ignora linhas vazias ou muito curtas
+                            if not linha or len(linha) < 5:
+                                continue
                             
-                        # 2. Tenta localizar a placa na linha (padrão antigo ou Mercosul)
-                        placa_busca = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', linha, re.IGNORECASE)
-                        if not placa_busca:
-                            continue
-                        placa = placa_busca.group(1).upper().replace('-', '')
-                        
-                        # 3. Divide a linha por espaços para analisar o final dela
-                        partes = linha.split()
-                        
-                        # Uma linha válida de abastecimento precisa de ter vários elementos
-                        if len(partes) < 7:
-                            continue
+                            # Transforma todos os campos em texto limpo para análise
+                            colunas = [str(celula).strip() for celula in linha if celula is not None]
                             
-                        try:
-                            # Os valores de Litros, Preço e Total estão sempre no final da linha
-                            # Vamos limpar e capturar de trás para a frente com segurança
-                            def formatar_float(texto_valor):
-                                texto_valor = texto_valor.replace('R$', '').replace('.', '').replace(',', '.').strip()
-                                return float(texto_valor)
-                            
-                            valor_total = formatar_float(partes[-1]) # Último elemento
-                            # partes[-2] é o preço por litro (ex: 5,89)
-                            litros = formatar_float(partes[-3])      # Antepenúltimo
-                            # partes[-4] é o preço médio/indicador
-                            
-                            # O KM geralmente está logo antes do tipo de combustível (ex: DIESEL, GASOLINA)
-                            # Para não errar o índice, procuramos o primeiro número que aparece após a placa
-                            km = 0.0
-                            idx_placa = partes.index(placa_busca.group(1))
-                            
-                            for item in partes[idx_placa+1:]:
-                                # Se o item contiver números e não for o tipo de combustível, provavelmente é o KM
-                                if re.search(r'\d', item) and not any(c in item.upper() for c in ['DIESEL', 'GASO', 'ETA', 'GNV', 'S10']):
-                                    km = abs(formatar_float(item))
-                                    break
-                            
-                            # Captura a data inicial
-                            data_transacao = partes[0]
-                            
-                            dados_extraidos.append({
-                                "Placa": placa,
-                                "Data": data_transacao,
-                                "Litros": litros,
-                                "Valor Total": valor_total,
-                                "Km": km
-                            })
-                            
-                        except:
-                            # Se uma linha específica falhar, o "except" captura e passa para a próxima
-                            # Isso impede que o erro 'IndexError' apareça no Streamlit
-                            continue
+                            # Procuramos a linha que comece com a Data da Transação (ex: 16/06/2026)
+                            if colunas and re.match(r'^\d{2}/\d{2}/\d{4}', colunas[0]):
+                                try:
+                                    # Mapeamento exato baseado no layout padrão da TicketLog:
+                                    # colunas[0] -> Data/Hora
+                                    # colunas[1] -> Número do Cartão
+                                    
+                                    # Localiza a Placa (Geralmente na coluna 3 ou 4)
+                                    placa = None
+                                    for celula in colunas:
+                                        busca_placa = re.search(r'([A-Z]{3}-?[A-Z0-9]\d{2})', celula, re.IGNORECASE)
+                                        if busca_placa:
+                                            placa = busca_placa.group(1).upper().replace('-', '')
+                                            break
+                                    
+                                    if not placa:
+                                        continue # Se não achou placa na linha, pula
+                                    
+                                    # Limpador matemático profissional
+                                    def converter_valor(txt):
+                                        txt = txt.replace('R$', '').replace('.', '').replace(',', '.').strip()
+                                        return float(txt)
+                                    
+                                    # No padrão TicketLog, olhando de trás para frente na tabela:
+                                    # Última coluna -> Valor Total
+                                    # Duas colunas antes -> Quantidade de Litros
+                                    # Algumas colunas antes -> Quilometragem (KM)
+                                    
+                                    valor_total = converter_valor(colunas[-1])
+                                    litros = converter_valor(colunas[-3])
+                                    
+                                    # Para o KM, buscamos o valor numérico que fica no meio da tabela antes dos litros
+                                    km = 0.0
+                                    for celula in colunas[3:-3]:
+                                        # Remove pontos e traços para testar se é o odômetro
+                                        teste_km = celula.replace('.', '').replace('-', '').strip()
+                                        if teste_km.isdigit():
+                                            km = abs(converter_valor(celula))
+                                            break
+                                    
+                                    dados_extraidos.append({
+                                        "Placa": placa,
+                                        "Data": colunas[0].split()[0], # Pega apenas a data, ignora a hora
+                                        "Litros": litros,
+                                        "Valor Total": valor_total,
+                                        "Km": km
+                                    })
+                                except Exception as e:
+                                    continue # Se uma linha falhar na conversão, não quebra o arquivo
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registos processados.")
+                st.write(f"### 🎉 Sucesso! {len(df_ticket)} registros importados com precisão:")
                 st.dataframe(df_ticket, use_container_width=True)
                 
-                if st.button("Confirmar e Gravar no Banco de Dados"):
+                if st.button("Gravar no Banco e Atualizar Frota"):
                     for _, row in df_ticket.iterrows():
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
@@ -236,13 +235,12 @@ elif menu == "⛽ Importar TicketLog":
                         
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
                                  (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados integrados com sucesso!")
+                    st.success("Sincronização com o banco de dados realizada com sucesso!")
             else:
-                st.error("Não foi possível extrair dados válidos deste PDF. Confirme se as linhas de transação estão nítidas e legíveis.")
+                st.error("Não encontramos dados estruturados em tabela nesse arquivo. O PDF foi gerado direto do sistema ou é um documento escaneado/foto?")
                 
         except Exception as e:
-            st.error(f"Erro crítico ao ler o ficheiro: {e}")
-            
+            st.error(f"Erro no motor de leitura de tabelas: {e}")            
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
     st.title("🔧 Manutenção & Ordens de Serviço (O.S.)")
