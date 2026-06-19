@@ -143,119 +143,53 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (MÓDULO HÍBRIDO CORRIGIDO) ---
-elif menu == "⛽ Importar TicketLog":
-    st.title("⛽ Integração e Lançamento TicketLog")
+# --- 4. REGISTRAR ABASTECIMENTO (LANÇAMENTO MANUAL DEFINITIVO) ---
+elif menu == "⛽ Importar TicketLog":  # Mantenha o texto exato que está na sua lista do sidebar
+    st.title("⛽ Registrar Abastecimento Manual")
+    st.markdown("Insira os dados do abastecimento realizado para atualização do histórico e odômetro da frota.")
     
-    # Cria duas abas na interface para organizar as opções
-    aba_pdf, aba_manual = st.tabs(["📄 Importar via PDF da TicketLog", "✍️ Lançamento Manual (Plano B)"])
-    
-    # ==========================================
-    # ABA 1: PROCESSAMENTO DE PDF (CÓDIGO SEGURO)
-    # ==========================================
-    with aba_pdf:
-        st.markdown("### Processamento Automático de Relatório")
-        import pdfplumber
-        import re
-
-        uploaded_file = st.file_uploader("Escolha o arquivo PDF original", type=['pdf'], key="ticket_pdf_uploader")
+    # Criando o formulário estruturado e limpo
+    with st.form("form_abastecimento_manual", clear_on_submit=True):
+        col1, col2 = st.columns(2)
         
-        if uploaded_file is not None:
-            try:
-                dados_extraidos = []
-                texto_cru_debug = ""
-                
-                with pdfplumber.open(uploaded_file) as pdf:
-                    for num_pag, pagina in enumerate(pdf.pages, 1):
-                        texto = pagina.extract_text()
-                        if not texto: continue
-                        
-                        texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
-                        
-                        for linha in texto.split('\n'):
-                            linha_limpa = linha.strip().replace('R$', '')
-                            
-                            # Localiza e isola a Placa do veículo (Padrão 7 caracteres mercosul/antigo)
-                            busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha_limpa, re.IGNORECASE)
-                            if not busca_placa: continue
-                            placa = busca_placa.group(1).upper()
-                            
-                            # Como o formato atual do PDF mudou, vamos apenas extrair a data se houver 
-                            # e deixar preparado para faturar futuramente se o padrão voltar.
-                            data_transacao = "18/06/2026" # Data padrão identificada no topo do seu PDF
-                            busca_data = re.search(r'(\d{2}/\d{2}/\d{4})', linha_limpa)
-                            if busca_data:
-                                data_transacao = busca_data.group(1)
-                                
-                            # Adiciona valores zerados temporariamente para não quebrar a estrutura do DataFrame
-                            dados_extraidos.append({
-                                "Placa": placa,
-                                "Data": data_transacao,
-                                "Litros": 0.0,
-                                "Valor Total": 0.0,
-                                "Km": 0.0
-                            })
-
-                if dados_extraidos:
-                    df_ticket = pd.DataFrame(dados_extraidos)
-                    st.warning("⚠️ O formato deste PDF é um extrato resumido (sem Litros/Valores na linha). As placas foram detectadas abaixo, mas utilize o 'Lançamento Manual' ao lado para inserir os dados do cupom.")
-                    st.dataframe(df_ticket[["Placa", "Data"]].drop_duplicates(), use_container_width=True)
-                else:
-                    st.error("Não foi possível extrair dados estruturados deste PDF automaticamente.")
-                    with st.expander("Visualizar texto cru capturado (Debug)"):
-                        st.code(texto_cru_debug[:3000])
-            except Exception as e:
-                st.error(f"Erro ao processar PDF: {e}")
-
-    # ==========================================
-    # ABA 2: FORMULÁRIO DE LANÇAMENTO MANUAL (CORRIGIDO)
-    # ==========================================
-    with aba_manual:
-        st.markdown("### Formulário de Contingência")
-        st.caption("Preencha os dados abaixo retirados do comprovante físico ou extrato.")
+        with col1:
+            placa_manual = st.text_input("Placa do Veículo", placeholder="Ex: SYN0J10", max_chars=7).upper().strip()
+            data_manual = st.date_input("Data do Abastecimento")
+            km_manual = st.number_input("Odômetro / KM Registrado", min_value=0, step=1, help="Insira o KM atual marcado no painel do carro.")
         
-        # Criando o formulário estruturado
-        with st.form("form_abastecimento_manual", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                placa_manual = st.text_input("Placa do Veículo", placeholder="Ex: SYN0J10", max_chars=7).upper().strip()
-                data_manual = st.date_input("Data do Abastecimento")
-                km_manual = st.number_input("Odômetro / KM Registrado", min_value=0, step=1, help="Insira o KM atual marcado no painel do carro.")
-            
-            with col2:
-                litros_manual = st.number_input("Quantidade de Litros (L)", min_value=0.0, step=0.01, format="%.2f")
-                valor_manual = st.number_input("Valor Total Pago (R$)", min_value=0.0, step=0.01, format="%.2f")
-                cartao_manual = st.text_input("Nº Cartão / Código Log (Opcional)", placeholder="Ex: TicketLog Frotas")
-            
-            # CORREÇÃO DO BOTÃO: Usando a função oficial do Streamlit
-            botao_salvar = st.form_submit_button(label="💾 Gravar Abastecimento Manual")
-            
-            if botao_salvar:
-                # Validação de campos obrigatórios
-                if not placa_manual or len(placa_manual) < 7:
-                    st.error("❌ Por favor, digite uma placa válida com 7 caracteres.")
-                elif litros_manual <= 0 or valor_manual <= 0:
-                    st.error("❌ O valor total e os litros precisam ser maiores que zero.")
-                else:
-                    try:
-                        # Converte a data para string no formato DD/MM/AAAA para o seu banco
-                        data_formatada = data_manual.strftime("%d/%m/%Y")
-                        identificador_cartao = cartao_manual if cartao_manual else "Manual"
-                        
-                        # 1. Insere o registro na tabela de abastecimentos
-                        query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
-                                    VALUES (?, ?, ?, ?, ?, ?)''', 
-                                 (placa_manual, data_formatada, float(litros_manual), float(valor_manual), float(km_manual), identificador_cartao), 
-                                 is_select=False)
-                        
-                        # 2. Atualiza o KM atual do veículo na tabela de veículos
-                        query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
-                                 (float(km_manual), placa_manual, float(km_manual)), is_select=False)
-                        
-                        st.success(f"🎉 Abastecimento do veículo **{placa_manual}** salvo com sucesso!")
-                    except Exception as e:
-                        st.error(f"Erro ao salvar no banco de dados: {e}")
+        with col2:
+            litros_manual = st.number_input("Quantidade de Litros (L)", min_value=0.0, step=0.01, format="%.2f")
+            valor_manual = st.number_input("Valor Total Pago (R$)", min_value=0.0, step=0.01, format="%.2f")
+            cartao_manual = st.text_input("Nº Cartão / Identificador (Opcional)", placeholder="Ex: TicketLog Frotas")
+        
+        # Botão oficial do Streamlit para submissão de formulários
+        botao_salvar = st.form_submit_button(label="💾 Gravar Abastecimento")
+        
+        if botao_salvar:
+            # Validação rápida dos campos obrigatórios
+            if not placa_manual or len(placa_manual) < 7:
+                st.error("❌ Por favor, digite uma placa válida com 7 caracteres.")
+            elif litros_manual <= 0 or valor_manual <= 0:
+                st.error("❌ O valor total e a quantidade de litros precisam ser maiores que zero.")
+            else:
+                try:
+                    # Converte a data selecionada para o formato de texto DD/MM/AAAA usado no seu banco
+                    data_formatada = data_manual.strftime("%d/%m/%Y")
+                    identificador_origem = cartao_manual if cartao_manual else "Manual"
+                    
+                    # 1. Insere o registro na tabela de abastecimentos
+                    query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
+                                VALUES (?, ?, ?, ?, ?, ?)''', 
+                             (placa_manual, data_formatada, float(litros_manual), float(valor_manual), float(km_manual), identificador_origem), 
+                             is_select=False)
+                    
+                    # 2. Atualiza o KM atual do veículo na tabela principal (apenas se o novo KM for maior)
+                    query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
+                             (float(km_manual), placa_manual, float(km_manual)), is_select=False)
+                    
+                    st.success(f"🎉 Abastecimento do veículo **{placa_manual}** gravado com sucesso e odômetro atualizado!")
+                except Exception as e:
+                    st.error(f"Erro ao salvar no banco de dados: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
