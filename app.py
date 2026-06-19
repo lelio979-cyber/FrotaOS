@@ -278,3 +278,75 @@ elif menu == "📋 Checklist Diário":
         query_db("INSERT INTO checklists (placa, data, motorista, itens_conformes, observacao) VALUES (?, ?, ?, ?, ?)",
                  (placa_ch, data_atual, mot_ch, itens_ok, obs), is_select=False)
         st.success("Checklist salvo com sucesso! Veículo liberado para rodagem.")
+        # =========================================================
+# NOVA PÁGINA: CHECKLIST UNIFICADO (SÓ COPIAR E COLAR NO FINAL)
+# =========================================================
+elif menu == "📋 Fazer Checklist":
+    st.title("📋 Painel Unificado de Inspeção de Frota")
+    st.markdown("Selecione o motivo da movimentação e realize a checagem obrigatória do veículo.")
+
+    with st.form("form_checklist_unico", clear_on_submit=True):
+        # 1. O operador escolhe o contexto aqui
+        motivo = st.selectbox(
+            "Qual o motivo deste checklist?",
+            [
+                "🔧 Entrada em Oficina",
+                "✅ Saída de Oficina",
+                "📜 Novo Contrato",
+                "🔄 Troca de Veículo no Posto",
+                "↩️ Devolução de Veículo"
+            ]
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            placa = st.text_input("Placa do Veículo", max_chars=7).upper().strip()
+        with col2:
+            km_atual = st.number_input("Odômetro / KM Atual", min_value=0, step=1)
+
+        st.markdown("---")
+        st.write("**Inspeção dos Itens:**")
+        
+        # 2. Os quadradinhos do checklist
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            pneus = st.checkbox("Pneus e Estepe OK")
+            avarias = st.checkbox("Sem riscos ou amassados")
+        with col_b:
+            farois = st.checkbox("Faróis e Lanternas OK")
+            setas = st.checkbox("Setas e Alerta OK")
+        with col_c:
+            doc = st.checkbox("Documento (CRLV) no carro")
+            limpeza = st.checkbox("Interior limpo")
+
+        st.markdown("---")
+        observacoes = st.text_area("Observações Adicionais", placeholder="Ex: Risco na porta traseira direita, faltando chave de roda...")
+
+        # 3. Botão de Salvar
+        botao_salvar = st.form_submit_button("💾 Gravar Checklist no Histórico")
+
+        if botao_salvar:
+            if not placa or len(placa) < 7:
+                st.error("❌ Digite uma placa válida para prosseguir.")
+            else:
+                try:
+                    # Formata a data de hoje
+                    from datetime import datetime
+                    data_hoje = datetime.now().strftime("%d/%m/%Y")
+                    
+                    # Cria o texto do status dos itens
+                    status_itens = f"Pneus: {pneus} | Lataria: {avarias} | Luzes: {farois}/{setas} | Doc: {doc} | Limpo: {limpeza}"
+                    
+                    # Salva tudo na sua tabela de histórico ou eventos
+                    # (Ajuste o nome das colunas se seu banco for diferente)
+                    query_db('''INSERT INTO movimentacoes (placa, data, tipo_evento, km_registro, observacoes, checklist_status) 
+                                VALUES (?, ?, ?, ?, ?, ?)''', 
+                             (placa, data_hoje, motivo, float(km_atual), observacoes, status_itens), is_select=False)
+                    
+                    # Atualiza o odômetro do carro automaticamente
+                    query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
+                             (float(km_atual), placa, float(km_atual)), is_select=False)
+                    
+                    st.success(f"🎉 Checklist de **{motivo}** do veículo **{placa}** salvo com sucesso!")
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
