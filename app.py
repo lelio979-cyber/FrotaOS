@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO PARSING RESOLVIDO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA ROBUSTEZ - FATIAMENTO REVERSO FIXO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador por desconstrução de strings contínuas corrigido.")
+    st.markdown("Processador por desconstrução de strings contínuas via Regex e fatiamento reverso fixo.")
     
     import pdfplumber
     import re
@@ -169,7 +169,7 @@ elif menu == "⛽ Importar TicketLog":
                     for linha in texto.split('\n'):
                         linha = linha.strip().replace('R$', '').replace(' ', '')
                         
-                        # 1. Filtro inicial de linha de transação
+                        # 1. Filtro inicial: Linha deve começar com data válida
                         if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
                             continue
                             
@@ -180,7 +180,8 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. ISOLAMENTO DO BLOCO NUMÉRICO FINAL
+                            # 3. EXTRAÇÃO CIRÚRGICA DE VALORES FINANCEIROS DE TRÁS PARA FRENTE
+                            # Isola todo o bloco numérico final da linha grudada
                             match_final = re.search(r'(-?[\d\.,]+)$', linha)
                             if not match_final:
                                 continue
@@ -189,30 +190,30 @@ elif menu == "⛽ Importar TicketLog":
                             partes = bloco_numerico.split(',')
                             
                             if len(partes) >= 3:
-                                # Captura do Valor Total
+                                # Captura do Valor Total (Última vírgula)
                                 centavos_total = partes[-1]
+                                # Pega apenas os dígitos numéricos colados antes da última vírgula
                                 inteiro_total = re.findall(r'\d+', partes[-2])[-1]
                                 valor_total = float(f"{inteiro_total}.{centavos_total}")
                                 
-                                # Captura dos Litros (Correção do nome da variável)
+                                # Captura dos Litros (Penúltima vírgula)
                                 centavos_litros = partes[1][:2]
                                 inteiro_litros = re.findall(r'\d+', partes[0])[-1]
                                 litros = float(f"{inteiro_litros}.{centavos_litros}")
                                 
-                                # Captura do KM de forma robusta por exclusão
-                                # Pegamos o texto entre a Placa e o Bloco Numérico Final
+                                # 4. EXTRAÇÃO DO KM POR LOCALIZAÇÃO DE PADRÃO (EIXO ESQUERDO)
+                                # Em vez de cortar o bloco numérico final, buscamos o primeiro número
+                                # com ponto (formato de milhar de KM) que aparece logo após a placa.
                                 idx_fim_placa = linha.find(placa) + len(placa)
-                                idx_inicio_numeros = linha.find(bloco_numerico)
-                                texto_meio = linha[idx_fim_placa:idx_inicio_numeros]
+                                texto_pos_placa = linha[idx_fim_placa:]
                                 
-                                # O KM é a parte inicial do bloco numérico (antes da primeira vírgula)
-                                txt_km_bruto = partes[0]
-                                # Remove o número correspondente ao inteiro dos litros do final do KM
-                                if txt_km_bruto.endswith(inteiro_litros):
-                                    txt_km_bruto = txt_km_bruto[:-len(inteiro_litros)]
-                                
-                                km_limpo = txt_km_bruto.replace('.', '').replace('-', '').strip()
-                                km = float(km_limpo) if km_limpo.isdigit() else 0.0
+                                # Busca um número contendo ponto decimal (Ex: 31.344 ou -31.344)
+                                busca_km = re.search(r'(-?\d+\.\d+)', texto_pos_placa)
+                                if busca_km:
+                                    km_txt = busca_km.group(1).replace('.', '').replace('-', '').strip()
+                                    km = float(km_txt) if km_txt.isdigit() else 0.0
+                                else:
+                                    km = 0.0
                                 
                                 dados_extraidos.append({
                                     "Placa": placa,
@@ -226,7 +227,7 @@ elif menu == "⛽ Importar TicketLog":
 
             if dados_extraidos:
                 df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Sucesso! Mapeamento concluído com {len(df_ticket)} registos processados.")
+                st.success(f"🎉 Sucesso! Mapeamento concluído com {len(df_ticket)} registros processados.")
                 st.dataframe(df_ticket, use_container_width=True)
                 
                 if st.button("Confirmar e Salvar no Banco"):
