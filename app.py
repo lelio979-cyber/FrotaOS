@@ -143,110 +143,128 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO MÁXIMA ROBUSTEZ - FATIAMENTO REVERSO FIXO) ---
+# --- 4. IMPORTAR TICKETLOG (MÓDULO HÍBRIDO: PDF + MANUAL) ---
 elif menu == "⛽ Importar TicketLog":
-    st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador por desconstrução de strings contínuas via Regex e fatiamento reverso fixo.")
+    st.title("⛽ Integração e Lançamento TicketLog")
     
-    import pdfplumber
-    import re
+    # Cria duas abas na interface para organizar as opções
+    aba_pdf, aba_manual = st.tabs(["📄 Importar via PDF da TicketLog", "✍️ Lançamento Manual (Plano B)"])
+    
+    # ==========================================
+    # ABA 1: PROCESSAMENTO DE PDF (CÓDIGO SEGURO)
+    # ==========================================
+    with aba_pdf:
+        st.markdown("### Processamento Automático de Relatório")
+        import pdfplumber
+        import re
 
-    uploaded_file = st.file_uploader("Escolha o arquivo PDF original da TicketLog", type=['pdf'])
-    
-    if uploaded_file is not None:
-        try:
-            dados_extraidos = []
-            texto_cru_debug = ""
-            
-            with pdfplumber.open(uploaded_file) as pdf:
-                for num_pag, pagina in enumerate(pdf.pages, 1):
-                    texto = pagina.extract_text()
-                    if not texto:
-                        continue
-                    
-                    texto_cru_debug += f"\n--- PÁGINA {num_pag} ---\n" + texto
-                    
-                    for linha in texto.split('\n'):
-                        linha = linha.strip().replace('R$', '').replace(' ', '')
-                        
-                        # 1. Filtro inicial: Linha deve começar com data válida
-                        if not re.match(r'^\d{2}/\d{2}/\d{4}', linha):
-                            continue
+        uploaded_file = st.file_uploader("Escolha o arquivo PDF original", type=['pdf'], key="ticket_pdf_uploader")
+        
+        if uploaded_file is not None:
+            try:
+                dados_extraidos = []
+                with pdfplumber.open(uploaded_file) as pdf:
+                    for pagina in pdf.pages:
+                        texto = pagina.extract_text()
+                        if not texto: continue
+                        for linha in texto.split('\n'):
+                            linha = linha.strip().replace('R$', '').replace(' ', '')
+                            if not re.match(r'^\d{2}/\d{2}/\d{4}', linha): continue
+                            busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha, re.IGNORECASE)
+                            if not busca_placa: continue
+                            placa = busca_placa.group(1).upper()
                             
-                        # 2. Localiza e isola a Placa do veículo
-                        busca_placa = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', linha, re.IGNORECASE)
-                        if not busca_placa:
-                            continue
-                        placa = busca_placa.group(1).upper()
-                        
-                        try:
-                            # 3. EXTRAÇÃO CIRÚRGICA DE VALORES FINANCEIROS DE TRÁS PARA FRENTE
-                            # Isola todo o bloco numérico final da linha grudada
-                            match_final = re.search(r'(-?[\d\.,]+)$', linha)
-                            if not match_final:
+                            try:
+                                match_final = re.search(r'(-?[\d\.,]+)$', linha)
+                                if not match_final: continue
+                                bloco_numerico = match_final.group(1)
+                                partes = bloco_numerico.split(',')
+                                if len(partes) >= 3:
+                                    centavos_total = partes[-1]
+                                    inteiro_total = re.findall(r'\d+', partes[-2])[-1]
+                                    valor_total = float(f"{inteiro_total}.{centavos_total}")
+                                    
+                                    centavos_litros = partes[1][:2]
+                                    inteiro_litros = re.findall(r'\d+', partes[0])[-1]
+                                    litros = float(f"{inteiro_litros}.{centavos_litros}")
+                                    
+                                    idx_fim_placa = linha.find(placa) + len(placa)
+                                    busca_km = re.search(r'(-?\d+\.\d+)', linha[idx_fim_placa:])
+                                    km = float(busca_km.group(1).replace('.', '').replace('-', '')) if busca_km else 0.0
+                                    
+                                    dados_extraidos.append({
+                                        "Placa": placa, "Data": linha[:10], "Litros": litros, "Valor Total": valor_total, "Km": km
+                                    })
+                            except:
                                 continue
-                                
-                            bloco_numerico = match_final.group(1) # Ex: -31.34444,115,89255,27
-                            partes = bloco_numerico.split(',')
-                            
-                            if len(partes) >= 3:
-                                # Captura do Valor Total (Última vírgula)
-                                centavos_total = partes[-1]
-                                # Pega apenas os dígitos numéricos colados antes da última vírgula
-                                inteiro_total = re.findall(r'\d+', partes[-2])[-1]
-                                valor_total = float(f"{inteiro_total}.{centavos_total}")
-                                
-                                # Captura dos Litros (Penúltima vírgula)
-                                centavos_litros = partes[1][:2]
-                                inteiro_litros = re.findall(r'\d+', partes[0])[-1]
-                                litros = float(f"{inteiro_litros}.{centavos_litros}")
-                                
-                                # 4. EXTRAÇÃO DO KM POR LOCALIZAÇÃO DE PADRÃO (EIXO ESQUERDO)
-                                # Em vez de cortar o bloco numérico final, buscamos o primeiro número
-                                # com ponto (formato de milhar de KM) que aparece logo após a placa.
-                                idx_fim_placa = linha.find(placa) + len(placa)
-                                texto_pos_placa = linha[idx_fim_placa:]
-                                
-                                # Busca um número contendo ponto decimal (Ex: 31.344 ou -31.344)
-                                busca_km = re.search(r'(-?\d+\.\d+)', texto_pos_placa)
-                                if busca_km:
-                                    km_txt = busca_km.group(1).replace('.', '').replace('-', '').strip()
-                                    km = float(km_txt) if km_txt.isdigit() else 0.0
-                                else:
-                                    km = 0.0
-                                
-                                dados_extraidos.append({
-                                    "Placa": placa,
-                                    "Data": linha[:10],
-                                    "Litros": litros,
-                                    "Valor Total": valor_total,
-                                    "Km": km
-                                })
-                        except:
-                            continue
 
-            if dados_extraidos:
-                df_ticket = pd.DataFrame(dados_extraidos)
-                st.success(f"🎉 Sucesso! Mapeamento concluído com {len(df_ticket)} registros processados.")
-                st.dataframe(df_ticket, use_container_width=True)
-                
-                if st.button("Confirmar e Salvar no Banco"):
-                    for _, row in df_ticket.iterrows():
+                if dados_extraidos:
+                    df_ticket = pd.DataFrame(dados_extraidos)
+                    st.success(f"🎉 {len(df_ticket)} registros encontrados no PDF!")
+                    st.dataframe(df_ticket, use_container_width=True)
+                    
+                    if st.button("Confirmar e Salvar Dados do PDF"):
+                        for _, row in df_ticket.iterrows():
+                            query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
+                                        VALUES (?, ?, ?, ?, ?, ?)''', 
+                                     (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog PDF"), is_select=False)
+                            query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
+                                     (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
+                        st.success("Dados salvos com sucesso!")
+                else:
+                    st.warning("Não conseguimos ler dados automáticos deste PDF. Use a aba de Lançamento Manual ao lado.")
+            except Exception as e:
+                st.error(f"Erro ao processar PDF: {e}")
+
+    # ==========================================
+    # ABA 2: FORMULÁRIO DE LANÇAMENTO MANUAL
+    # ==========================================
+    with aba_manual:
+        st.markdown("### Formulário de Contingência")
+        st.caption("Preencha os dados abaixo retirados do comprovante físico ou extrato rejeitado.")
+        
+        # Criando o formulário estruturado
+        with st.form("form_abastecimento_manual", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                placa_manual = st.text_input("Placa do Veículo", placeholder="Ex: TXJ2B52", max_chars=7).upper().strip()
+                data_manual = st.date_input("Data do Abastecimento")
+                km_manual = st.number_input("Odômetro / KM Registrado", min_value=0, step=1, help="Insira o KM atual marcado no painel do carro.")
+            
+            with col2:
+                litros_manual = st.number_input("Quantidade de Litros (L)", min_value=0.0, step=0.01, format="%.2f")
+                valor_manual = st.number_input("Valor Total Pago (R$)", min_value=0.0, step=0.01, format="%.2f")
+                cartao_manual = st.text_input("Nº Cartão / Código Log (Opcional)", placeholder="Ex: TicketLog Frotas")
+            
+            # Botão de submissão do formulário
+            botao_salvar = st.form_submit_with_button_kwargs(label="💾 Gravar Abastecimento Manual")
+            
+            if botao_salvar:
+                # Validação de campos obrigatórios
+                if not placa_manual or len(placa_manual) < 7:
+                    st.error("❌ Por favor, digite uma placa válida com 7 caracteres.")
+                elif litros_manual <= 0 or valor_manual <= 0:
+                    st.error("❌ O valor total e os litros precisam ser maiores que zero.")
+                else:
+                    try:
+                        # Converte a data para string no formato DD/MM/AAAA para manter compatibilidade com seu banco
+                        data_formatada = data_manual.strftime("%d/%m/%Y")
+                        identificador_cartao = cartao_manual if cartao_manual else "Manual"
+                        
+                        # 1. Insere o registro na tabela de abastecimentos
                         query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
                                     VALUES (?, ?, ?, ?, ?, ?)''', 
-                                 (str(row['Placa']), str(row['Data']), float(row['Litros']), float(row['Valor Total']), float(row['Km']), "TicketLog PDF"), 
+                                 (placa_manual, data_formatada, float(litros_manual), float(valor_manual), float(km_manual), identificador_cartao), 
                                  is_select=False)
                         
+                        # 2. Atualiza o KM atual do veículo na tabela de veículos (se for maior que o KM antigo)
                         query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
-                                 (float(row['Km']), str(row['Placa']), float(row['Km'])), is_select=False)
-                    st.success("Dados gravados com sucesso!")
-            else:
-                st.error("Erro crítico na análise dos blocos de dados.")
-                with st.expander("Visualizar texto cru capturado (Debug)"):
-                    st.code(texto_cru_debug[:3000])
-                    
-        except Exception as e:
-            st.error(f"Erro no motor de processamento: {e}")
+                                 (float(km_manual), placa_manual, float(km_manual)), is_select=False)
+                        
+                        st.success(f"🎉 Abastecimento do veículo **{placa_manual}** salvo e frota atualizada com sucesso!")
+                    except Exception as e:
+                        st.error(f"Erro ao salvar no banco de dados: {e}")
             
 # --- 5. ORDENS DE SERVIÇO ---
 elif menu == "🔧 Ordens de Serviço":
