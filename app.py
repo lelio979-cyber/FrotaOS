@@ -45,6 +45,39 @@ def query_db(query, params=(), is_select=True):
         conn.commit()
         conn.close()
 
+def renderizar_checklist_frota(tipo_evento, chave_unica):
+    """
+    Renderiza o formulário padrão de checklist para qualquer movimentação de veículo.
+    'tipo_evento' define o contexto (Ex: Entry, Exit, Novo Contrato)
+    'chave_unica' evita conflitos de ID de componentes do Streamlit na mesma tela.
+    """
+    st.markdown(f"### 📋 Checklist de Inspeção OBRIGATÓRIA - {tipo_evento}")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.write("**📱 Itens Externos**")
+        pneus = st.checkbox("Pneus em bom estado (e estepe)", key=f"ch_pneus_{chave_unica}")
+        avarias = st.checkbox("Sem avarias na lataria/riscos", key=f"ch_avarias_{chave_unica}")
+        limpadores = st.checkbox("Limpadores de para-brisa", key=f"ch_limp_{chave_unica}")
+        
+    with col2:
+        st.write("**💡 Iluminação & Elétrica**")
+        farois = st.checkbox("Faróis e Lanternas funcionando", key=f"ch_farol_{chave_unica}")
+        setas = st.checkbox("Setas e Alerta", key=f"ch_setas_{chave_unica}")
+        painel = st.checkbox("Sem luzes de erro no painel", key=f"ch_painel_{chave_unica}")
+        
+    with col3:
+        st.write("**📄 Segurança & Documentos**")
+        doc = st.checkbox("Documento do veículo (CRLV) presente", key=f"ch_doc_{chave_unica}")
+        ferramentas = st.checkbox("Macaco, chave de roda e triângulo", key=f"ch_ferram_{chave_unica}")
+        higienizacao = st.checkbox("Interior limpo e higienizado", key=f"ch_hig__{chave_unica}")
+        
+    observacoes = st.text_area("Observações adicionais do estado do veículo", placeholder="Caso haja riscos, amassados ou itens faltando, detalhe aqui...", key=f"obs_{chave_unica}")
+    
+    # Retorna um dicionário com o status para salvar no banco se necessário
+    todos_ok = all([pneus, avarias, limpadores, farois, setas, painel, doc, ferramentas, higienizacao])
+    return todos_ok, observacoes
+
 # --- SIDEBAR NAV ---
 st.sidebar.title("🚚 Frota Elite v1.0")
 st.sidebar.markdown("---")
