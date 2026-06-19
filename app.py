@@ -143,10 +143,10 @@ elif menu == "👥 Motoristas":
     df_mot = query_db("SELECT * FROM motoristas")
     st.dataframe(df_mot, use_container_width=True)
 
-# --- 4. IMPORTAR TICKETLOG (VERSÃO INDEX REVERSO ABSOLUTO) ---
+# --- 4. IMPORTAR TICKETLOG (VERSÃO PARSING RESOLVIDO) ---
 elif menu == "⛽ Importar TicketLog":
     st.title("⛽ Integração e Importação TicketLog (PDF)")
-    st.markdown("Processador por desconstrução de strings contínuas.")
+    st.markdown("Processador por desconstrução de strings contínuas corrigido.")
     
     import pdfplumber
     import re
@@ -180,35 +180,38 @@ elif menu == "⛽ Importar TicketLog":
                         placa = busca_placa.group(1).upper()
                         
                         try:
-                            # 3. FATIAMENTO SEGURO COM RECONSTRUÇÃO STRING
-                            # Isola a sequência estritamente numérica do final da linha
+                            # 3. ISOLAMENTO DO BLOCO NUMÉRICO FINAL
                             match_final = re.search(r'(-?[\d\.,]+)$', linha)
                             if not match_final:
                                 continue
                                 
                             bloco_numerico = match_final.group(1) # Ex: -31.34444,115,89255,27
-                            
-                            # Separamos o bloco por vírgulas para manipulação direta dos segmentos
                             partes = bloco_numerico.split(',')
                             
                             if len(partes) >= 3:
-                                # O Valor Total é composto pelos últimos dígitos antes da última vírgula + os centavos dela
+                                # Captura do Valor Total
                                 centavos_total = partes[-1]
                                 inteiro_total = re.findall(r'\d+', partes[-2])[-1]
                                 valor_total = float(f"{inteiro_total}.{centavos_total}")
                                 
-                                # Os Litros encontram-se no início do padrão aglutinado antes da segunda vírgula
+                                # Captura dos Litros (Correção do nome da variável)
                                 centavos_litros = partes[1][:2]
                                 inteiro_litros = re.findall(r'\d+', partes[0])[-1]
-                                litros = float(f"{inteiro_litros}.{txt_litros_centavos}" if 'txt_litros_centavos' in locals() else f"{inteiro_litros}.{centavos_litros}")
+                                litros = float(f"{inteiro_litros}.{centavos_litros}")
                                 
-                                # O KM é extraído removendo os dígitos do litro capturados na primeira parte
+                                # Captura do KM de forma robusta por exclusão
+                                # Pegamos o texto entre a Placa e o Bloco Numérico Final
+                                idx_fim_placa = linha.find(placa) + len(placa)
+                                idx_inicio_numeros = linha.find(bloco_numerico)
+                                texto_meio = linha[idx_fim_placa:idx_inicio_numeros]
+                                
+                                # O KM é a parte inicial do bloco numérico (antes da primeira vírgula)
                                 txt_km_bruto = partes[0]
-                                idx_corte_litro = txt_km_bruto.rfind(inteiro_litros)
-                                txt_km = txt_km_bruto[:idx_corte_litro]
+                                # Remove o número correspondente ao inteiro dos litros do final do KM
+                                if txt_km_bruto.endswith(inteiro_litros):
+                                    txt_km_bruto = txt_km_bruto[:-len(inteiro_litros)]
                                 
-                                # Limpeza final do odômetro
-                                km_limpo = txt_km.replace('.', '').replace('-', '').strip()
+                                km_limpo = txt_km_bruto.replace('.', '').replace('-', '').strip()
                                 km = float(km_limpo) if km_limpo.isdigit() else 0.0
                                 
                                 dados_extraidos.append({
