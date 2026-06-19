@@ -1,352 +1,491 @@
-import streamlit as pd
-import streamlit as st
-import pandas as pd
+import os
 import sqlite3
-from datetime import datetime
-import io
+import datetime
+from tkinter import messagebox, ttk
+import customtkinter as ctk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkinter import FigureCanvasTkAgg
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Gestão de Frotas Pro", layout="wide", page_icon="🚚")
-
-# --- BANCO DE DADOS (INICIALIZAÇÃO) ---
-def init_db():
-    conn = sqlite3.connect('frota_pro.db')
-    c = conn.cursor()
-    # Veículos
-    c.execute('''CREATE TABLE IF NOT EXISTS veiculos 
-                 (id INTEGER PRIMARY KEY, placa TEXT UNIQUE, modelo TEXT, marca TEXT, ano INTEGER, km_atual REAL, status TEXT)''')
-    # Motoristas
-    c.execute('''CREATE TABLE IF NOT EXISTS motoristas 
-                 (id INTEGER PRIMARY KEY, nome TEXT, cnh TEXT, status TEXT)''')
-    # Abastecimentos
-    c.execute('''CREATE TABLE IF NOT EXISTS abastecimentos 
-                 (id INTEGER PRIMARY KEY, placa TEXT, data TEXT, litro REAL, valor_total REAL, km_registro REAL, cartao TEXT)''')
-    # Manutenções / OS
-    c.execute('''CREATE TABLE IF NOT EXISTS ordens_servico 
-                 (id INTEGER PRIMARY KEY, placa TEXT, descricao TEXT, custo REAL, data_entrada TEXT, status TEXT)''')
-    # Checklists
-    c.execute('''CREATE TABLE IF NOT EXISTS checklists 
-                 (id INTEGER PRIMARY KEY, placa TEXT, data TEXT, motorista TEXT, itens_conformes TEXT, observacao TEXT)''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# --- FUNÇÕES DE BANCO ---
-def query_db(query, params=(), is_select=True):
-    conn = sqlite3.connect('frota_pro.db')
-    if is_select:
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        return df
-    else:
-        c = conn.cursor()
-        c.execute(query, params)
-        conn.commit()
-        conn.close()
-
-def renderizar_checklist_frota(tipo_evento, chave_unica):
-    """
-    Renderiza o formulário padrão de checklist para qualquer movimentação de veículo.
-    'tipo_evento' define o contexto (Ex: Entry, Exit, Novo Contrato)
-    'chave_unica' evita conflitos de ID de componentes do Streamlit na mesma tela.
-    """
-    st.markdown(f"### 📋 Checklist de Inspeção OBRIGATÓRIA - {tipo_evento}")
+# ==========================================
+# 1. CONFIGURAÇÃO DO BANCO DE DADOS (SQLite)
+# ==========================================
+def conectar_db():
+    conn = sqlite3.connect('gestao_frotas.db')
+    cursor = conn.cursor()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.write("**📱 Itens Externos**")
-        pneus = st.checkbox("Pneus em bom estado (e estepe)", key=f"ch_pneus_{chave_unica}")
-        avarias = st.checkbox("Sem avarias na lataria/riscos", key=f"ch_avarias_{chave_unica}")
-        limpadores = st.checkbox("Limpadores de para-brisa", key=f"ch_limp_{chave_unica}")
-        
-    with col2:
-        st.write("**💡 Iluminação & Elétrica**")
-        farois = st.checkbox("Faróis e Lanternas funcionando", key=f"ch_farol_{chave_unica}")
-        setas = st.checkbox("Setas e Alerta", key=f"ch_setas_{chave_unica}")
-        painel = st.checkbox("Sem luzes de erro no painel", key=f"ch_painel_{chave_unica}")
-        
-    with col3:
-        st.write("**📄 Segurança & Documentos**")
-        doc = st.checkbox("Documento do veículo (CRLV) presente", key=f"ch_doc_{chave_unica}")
-        ferramentas = st.checkbox("Macaco, chave de roda e triângulo", key=f"ch_ferram_{chave_unica}")
-        higienizacao = st.checkbox("Interior limpo e higienizado", key=f"ch_hig__{chave_unica}")
-        
-    observacoes = st.text_area("Observações adicionais do estado do veículo", placeholder="Caso haja riscos, amassados ou itens faltando, detalhe aqui...", key=f"obs_{chave_unica}")
-    
-    # Retorna um dicionário com o status para salvar no banco se necessário
-    todos_ok = all([pneus, avarias, limpadores, farois, setas, painel, doc, ferramentas, higienizacao])
-    return todos_ok, observacoes
-
-# --- SIDEBAR NAV ---
-st.sidebar.title("🚚 Frota Elite v1.0")
-st.sidebar.markdown("---")
-menu = st.sidebar.radio("Navegação", [
-    "📊 Dashboard Executivo", 
-    "🚗 Cadastro de Veículos", 
-    "👥 Motoristas",
-    "⛽ Importar TicketLog", 
-    "🔧 Ordens de Serviço", 
-    "📋 Checklist Diário"
-])
-
-# --- 1. DASHBOARD ---
-if menu == "📊 Dashboard Executivo":
-    st.title("📊 Dashboard Analítico da Frota")
-    st.markdown("Visão em tempo real dos ~150 veículos leves.")
-    
-    # Métricas Principais
-    df_v = query_db("SELECT * FROM veiculos")
-    df_os = query_db("SELECT * FROM ordens_servico WHERE status = 'Aberta'")
-    df_ab = query_db("SELECT * FROM abastecimentos")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total de Veículos", len(df_v))
-    col2.metric("Veículos em Manutenção", len(df_os))
-    col3.metric("Investimento Combustível (Mês)", f"R$ {df_ab['valor_total'].sum():,.2f}")
-    col4.metric("KM Total Rodada", f"{df_v['km_atual'].sum():,.0f} km" if not df_v.empty else "0 km")
-    
-    st.markdown("---")
-    
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        st.subheader("Status da Frota")
-        if not df_v.empty:
-            status_counts = df_v['status'].value_counts()
-            st.bar_chart(status_counts)
-        else:
-            st.info("Nenhum veículo cadastrado.")
-            
-    with col_g2:
-        st.subheader("Evolução de Custos com Abastecimento")
-        if not df_ab.empty:
-            df_ab['data'] = pd.to_datetime(df_ab['data'])
-            df_gastos = df_ab.groupby(df_ab['data'].dt.strftime('%Y-%m'))['valor_total'].sum()
-            st.line_chart(df_gastos)
-        else:
-            st.info("Sem dados de abastecimento disponíveis.")
-
-# --- 2. CADASTRO DE VEÍCULOS ---
-elif menu == "🚗 Cadastro de Veículos":
-    st.title("🚗 Gestão e Cadastro de Veículos")
-    
-    with st.form("form_veiculo", clear_on_submit=True):
-        col1, col2, col3 = st.columns(3)
-        placa = col1.text_input("Placa (AAA-0000)").upper()
-        modelo = col2.text_input("Modelo")
-        marca = col3.text_input("Marca")
-        
-        col4, col5, col6 = st.columns(3)
-        ano = col4.number_input("Ano", min_value=2000, max_value=2027, value=2024)
-        km = col5.number_input("KM Atual", min_value=0.0, step=100.0)
-        status = col6.selectbox("Status Inicial", ["Ativo", "Em Manutenção", "Inativo"])
-        
-        submit = st.form_submit_button("Salvar Veículo")
-        
-    if submit:
-        if placa and modelo:
-            try:
-                query_db("INSERT INTO veiculos (placa, modelo, marca, ano, km_atual, status) VALUES (?, ?, ?, ?, ?, ?)",
-                         (placa, modelo, marca, ano, km, status), is_select=False)
-                st.success(f"Veículo {placa} cadastrado com sucesso!")
-            except:
-                st.error("Erro: Esta placa já está cadastrada.")
-        else:
-            st.warning("Preencha os campos obrigatórios (Placa e Modelo).")
-            
-    st.markdown("### Veículos Cadastrados")
-    df_veiculos = query_db("SELECT * FROM veiculos")
-    st.dataframe(df_veiculos, use_container_width=True)
-
-# --- 3. MOTORISTAS ---
-elif menu == "👥 Motoristas":
-    st.title("👥 Cadastro de Motoristas")
-    
-    with st.form("form_motorista", clear_on_submit=True):
-        nome = st.text_input("Nome Completo")
-        cnh = st.text_input("Número da CNH")
-        status = st.selectbox("Status", ["Disponível", "Em Rota", "Afastado"])
-        submit = st.form_submit_button("Cadastrar Motorista")
-        
-    if submit:
-        if nome and cnh:
-            query_db("INSERT INTO motoristas (nome, cnh, status) VALUES (?, ?, ?)", (nome, cnh, status), is_select=False)
-            st.success(f"Motorista {nome} cadastrado com sucesso!")
-            
-    df_mot = query_db("SELECT * FROM motoristas")
-    st.dataframe(df_mot, use_container_width=True)
-
-# --- 4. REGISTRAR ABASTECIMENTO (LANÇAMENTO MANUAL DEFINITIVO) ---
-elif menu == "⛽ Importar TicketLog":  # Mantenha o texto exato que está na sua lista do sidebar
-    st.title("⛽ Registrar Abastecimento Manual")
-    st.markdown("Insira os dados do abastecimento realizado para atualização do histórico e odômetro da frota.")
-    
-    # Criando o formulário estruturado e limpo
-    with st.form("form_abastecimento_manual", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            placa_manual = st.text_input("Placa do Veículo", placeholder="Ex: SYN0J10", max_chars=7).upper().strip()
-            data_manual = st.date_input("Data do Abastecimento")
-            km_manual = st.number_input("Odômetro / KM Registrado", min_value=0, step=1, help="Insira o KM atual marcado no painel do carro.")
-        
-        with col2:
-            litros_manual = st.number_input("Quantidade de Litros (L)", min_value=0.0, step=0.01, format="%.2f")
-            valor_manual = st.number_input("Valor Total Pago (R$)", min_value=0.0, step=0.01, format="%.2f")
-            cartao_manual = st.text_input("Nº Cartão / Identificador (Opcional)", placeholder="Ex: TicketLog Frotas")
-        
-        # Botão oficial do Streamlit para submissão de formulários
-        botao_salvar = st.form_submit_button(label="💾 Gravar Abastecimento")
-        
-        if botao_salvar:
-            # Validação rápida dos campos obrigatórios
-            if not placa_manual or len(placa_manual) < 7:
-                st.error("❌ Por favor, digite uma placa válida com 7 caracteres.")
-            elif litros_manual <= 0 or valor_manual <= 0:
-                st.error("❌ O valor total e a quantidade de litros precisam ser maiores que zero.")
-            else:
-                try:
-                    # Converte a data selecionada para o formato de texto DD/MM/AAAA usado no seu banco
-                    data_formatada = data_manual.strftime("%d/%m/%Y")
-                    identificador_origem = cartao_manual if cartao_manual else "Manual"
-                    
-                    # 1. Insere o registro na tabela de abastecimentos
-                    query_db('''INSERT INTO abastecimentos (placa, data, litro, valor_total, km_registro, cartao) 
-                                VALUES (?, ?, ?, ?, ?, ?)''', 
-                             (placa_manual, data_formatada, float(litros_manual), float(valor_manual), float(km_manual), identificador_origem), 
-                             is_select=False)
-                    
-                    # 2. Atualiza o KM atual do veículo na tabela principal (apenas se o novo KM for maior)
-                    query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
-                             (float(km_manual), placa_manual, float(km_manual)), is_select=False)
-                    
-                    st.success(f"🎉 Abastecimento do veículo **{placa_manual}** gravado com sucesso e odômetro atualizado!")
-                except Exception as e:
-                    st.error(f"Erro ao salvar no banco de dados: {e}")
-            
-# --- 5. ORDENS DE SERVIÇO ---
-elif menu == "🔧 Ordens de Serviço":
-    st.title("🔧 Manutenção & Ordens de Serviço (O.S.)")
-    
-    df_v = query_db("SELECT placa FROM veiculos WHERE status='Ativo' or status='Em Manutenção'")
-    
-    with st.form("form_os", clear_on_submit=True):
-        placa_os = st.selectbox("Selecione o Veículo", df_v['placa'].tolist() if not df_v.empty else ["Nenhum cadastrado"])
-        descricao = st.text_area("Descrição do Serviço / Sinistro / Multa")
-        custo = st.number_input("Custo Total (R$)", min_value=0.0, step=50.0)
-        status_os = st.selectbox("Status da OS", ["Aberta", "Aprovada", "Concluída", "Recusada"])
-        
-        submit = st.form_submit_button("Gerar Ordem de Serviço")
-        
-    if submit and placa_os != "Nenhum cadastrado":
-        data_atual = datetime.now().strftime("%Y-%m-%d")
-        query_db("INSERT INTO ordens_servico (placa, descricao, custo, data_entrada, status) VALUES (?, ?, ?, ?, ?)",
-                 (placa_os, descricao, custo, data_atual, status_os), is_select=False)
-        
-        if status_os == "Aberta":
-            query_db("UPDATE veiculos SET status = 'Em Manutenção' WHERE placa = ?", (placa_os,), is_select=False)
-        st.success("O.S. registrada com sucesso!")
-
-    st.markdown("### Registro Geral de Manutenções e Custos Financeiros")
-    df_todas_os = query_db("SELECT * FROM ordens_servico")
-    st.dataframe(df_todas_os, use_container_width=True)
-
-# --- 6. CHECKLIST DIÁRIO ---
-elif menu == "📋 Checklist Diário":
-    st.title("📋 Checklist de Liberação de Veículo")
-    
-    df_v = query_db("SELECT placa FROM veiculos WHERE status='Ativo'")
-    df_m = query_db("SELECT nome FROM motoristas WHERE status='Disponível'")
-    
-    with st.form("form_checklist"):
-        placa_ch = st.selectbox("Veículo", df_v['placa'].tolist() if not df_v.empty else ["Nenhum"])
-        mot_ch = st.selectbox("Motorista", df_m['nome'].tolist() if not df_m.empty else ["Nenhum"])
-        
-        st.markdown("**Verificação de Itens Básicos:**")
-        item1 = st.checkbox("Óleo do motor e fluídos em nível adequado?")
-        item2 = st.checkbox("Pneus em bom estado e calibrados?")
-        item3 = st.checkbox("Luzes, setas e faróis funcionando?")
-        item4 = st.checkbox("Documentação do veículo em dia (CRLV)?")
-        item5 = st.checkbox("Limpeza interna e externa em ordem?")
-        
-        obs = st.text_input("Observações adicionais")
-        submit = st.form_submit_button("Salvar Checklist")
-        
-    if submit and placa_ch != "Nenhum":
-        itens_ok = f"Oleo:{item1}, Pneus:{item2}, Luzes:{item3}, Doc:{item4}, Limpeza:{item5}"
-        data_atual = datetime.now().strftime("%Y-%m-%d %H:%M")
-        query_db("INSERT INTO checklists (placa, data, motorista, itens_conformes, observacao) VALUES (?, ?, ?, ?, ?)",
-                 (placa_ch, data_atual, mot_ch, itens_ok, obs), is_select=False)
-        st.success("Checklist salvo com sucesso! Veículo liberado para rodagem.")
-        # =========================================================
-# NOVA PÁGINA: CHECKLIST UNIFICADO (SÓ COPIAR E COLAR NO FINAL)
-# =========================================================
-elif menu == "📋 Fazer Checklist":
-    st.title("📋 Painel Unificado de Inspeção de Frota")
-    st.markdown("Selecione o motivo da movimentação e realize a checagem obrigatória do veículo.")
-
-    with st.form("form_checklist_unico", clear_on_submit=True):
-        # 1. O operador escolhe o contexto aqui
-        motivo = st.selectbox(
-            "Qual o motivo deste checklist?",
-            [
-                "🔧 Entrada em Oficina",
-                "✅ Saída de Oficina",
-                "📜 Novo Contrato",
-                "🔄 Troca de Veículo no Posto",
-                "↩️ Devolução de Veículo"
-            ]
+    # Tabela de Veículos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS veiculos (
+            placa TEXT PRIMARY KEY,
+            modelo TEXT,
+            km_atual INTEGER,
+            status TEXT DEFAULT 'Disponível',
+            km_proxima_revisao INTEGER
         )
+    ''')
+    
+    # Tabela de Checklists (Foco do Operador)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS checklists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT,
+            tipo TEXT, -- 'Entrada' ou 'Saída'
+            km INTEGER,
+            combustivel TEXT,
+            avarias TEXT,
+            operador TEXT,
+            data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Tabela de Ordens de Serviço (OS) e Manutenção
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ordens_servico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT,
+            tipo_manutencao TEXT, -- 'Preventiva' ou 'Corretiva'
+            descricao TEXT,
+            custo REAL,
+            status TEXT DEFAULT 'Aguardando Aprovação', -- 'Aguardando Aprovação', 'Em Andamento', 'Encerrado'
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Tabela de Abastecimentos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS abastecimentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT,
+            litros REAL,
+            valor_total REAL,
+            km_registro INTEGER,
+            data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''');
+
+    # Tabela de Multas (Autopreenchimento por Código)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS multas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT,
+            data TEXT,
+            endereco TEXT,
+            codigo_multa TEXT,
+            gravidade TEXT,
+            pontos INTEGER,
+            valor REAL,
+            descricao TEXT
+        )
+    ''')
+    
+    conn.commit()
+    return conn
+
+# Inicializa DB e insere dados de teste caso vazios
+conn = conectar_db()
+cursor = conn.cursor()
+cursor.execute("SELECT COUNT(*) FROM veiculos")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO veiculos VALUES ('BRA2E19', 'Volvo FH 540', 98000, 'Disponível', 100000)")
+    cursor.execute("INSERT INTO veiculos VALUES ('ABC1234', 'Scania R450', 145000, 'Disponível', 150000)")
+    conn.commit()
+
+# Dicionário de automação de multas solicitado
+DICIONARIO_MULTAS = {
+    "7455-0": {"gravidade": "Média", "pontos": 4, "valor": 130.16, "desc": "Transitar em velocidade superior à máxima permitida em até 20%"},
+    "7463-0": {"gravidade": "Grave", "pontos": 5, "valor": 195.23, "desc": "Transitar em velocidade superior à máxima permitida entre 20% e 50%"},
+    "5010-0": {"gravidade": "Gravíssima", "pontos": 7, "valor": 880.41, "desc": "Dirigir veículo sem possuir CNH/PPD/ACC"}
+}
+
+# ==========================================
+# 2. INTERFACE GRÁFICA (CustomTkinter)
+# ==========================================
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+class SistemaGestaoFrotas(ctk.CTk):
+    def __init__(self):
+        super().__init__()
         
-        col1, col2 = st.columns(2)
-        with col1:
-            placa = st.text_input("Placa do Veículo", max_chars=7).upper().strip()
-        with col2:
-            km_atual = st.number_input("Odômetro / KM Atual", min_value=0, step=1)
-
-        st.markdown("---")
-        st.write("**Inspeção dos Itens:**")
+        self.title("FleetX - Gestão Inteligente de Frotas")
+        self.geometry("1280x720")
         
-        # 2. Os quadradinhos do checklist
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            pneus = st.checkbox("Pneus e Estepe OK")
-            avarias = st.checkbox("Sem riscos ou amassados")
-        with col_b:
-            farois = st.checkbox("Faróis e Lanternas OK")
-            setas = st.checkbox("Setas e Alerta OK")
-        with col_c:
-            doc = st.checkbox("Documento (CRLV) no carro")
-            limpeza = st.checkbox("Interior limpo")
+        # Tela de Login Inicial
+        self.tela_login()
 
-        st.markdown("---")
-        observacoes = st.text_area("Observações Adicionais", placeholder="Ex: Risco na porta traseira direita, faltando chave de roda...")
+    def login_sucesso(self, perfil):
+        self.perfil_usuario = perfil
+        self.destruir_telas()
+        self.construir_layout_principal()
 
-        # 3. Botão de Salvar
-        botao_salvar = st.form_submit_button("💾 Gravar Checklist no Histórico")
+    def destruir_telas(self):
+        for widget in self.winfo_children():
+            widget.destroy()
 
-        if botao_salvar:
-            if not placa or len(placa) < 7:
-                st.error("❌ Digite uma placa válida para prosseguir.")
+    # --- TELA DE LOGIN ---
+    def tela_login(self):
+        self.frame_login = ctk.CTkFrame(self, width=400, height=500, corner_radius=15)
+        self.frame_login.place(relx=0.5, rely=0.5, anchor="center")
+        
+        lbl_titulo = ctk.CTkLabel(self.frame_login, text="FleetX", font=("Arial", 32, "bold"), text_color="#1F6AA5")
+        lbl_titulo.pack(pady=30)
+        
+        self.txt_user = ctk.CTkEntry(self.frame_login, placeholder_text="Usuário ou Motorista", width=250, height=40)
+        self.txt_user.pack(pady=15)
+        
+        self.txt_pass = ctk.CTkEntry(self.frame_login, placeholder_text="Senha", show="*", width=250, height=40)
+        self.txt_pass.pack(pady=15)
+        
+        btn_operador = ctk.CTkButton(self.frame_login, text="Entrar como Operador (Campo)", width=250, height=40, fg_color="#2b2b2b", hover_color="#3a3a3a", command=lambda: self.login_sucesso("operador"))
+        btn_operador.pack(pady=10)
+        
+        btn_gestor = ctk.CTkButton(self.frame_login, text="Entrar como Gestor (Completo)", width=250, height=40, command=lambda: self.login_sucesso("gestor"))
+        btn_gestor.pack(pady=10)
+
+    # --- LAYOUT PRINCIPAL ---
+    def construir_layout_principal(self):
+        # Menu Lateral
+        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
+        self.sidebar.pack(side="left", fill="y")
+        
+        lbl_logo = ctk.CTkLabel(self.sidebar, text="FleetX Control", font=("Arial", 20, "bold"))
+        lbl_logo.pack(pady=20, padx=10)
+        
+        lbl_perfil = ctk.CTkLabel(self.sidebar, text=f"Perfil: {self.perfil_usuario.upper()}", text_color="green", font=("Arial", 12, "italic"))
+        lbl_perfil.pack(pady=5)
+        
+        # Botões do Menu adaptados por perfil
+        btn_chk = ctk.CTkButton(self.sidebar, text="📋 Checklist Campo", anchor="w", command=self.aba_checklist)
+        btn_chk.pack(pady=5, padx=10, fill="x")
+        
+        btn_abast = ctk.CTkButton(self.sidebar, text="⛽ Abastecimento", anchor="w", command=self.aba_abastecimento)
+        btn_abast.pack(pady=5, padx=10, fill="x")
+
+        if self.perfil_usuario == "gestor":
+            btn_dash = ctk.CTkButton(self.sidebar, text="📊 Dashboard & KPIs", anchor="w", command=self.aba_dashboard)
+            btn_dash.pack(pady=5, padx=10, fill="x")
+            
+            btn_os = ctk.CTkButton(self.sidebar, text="🛠️ OS & Aprovações", anchor="w", command=self.aba_ordens_servico)
+            btn_os.pack(pady=5, padx=10, fill="x")
+            
+            btn_multas = ctk.CTkButton(self.sidebar, text="⚠️ Controle de Multas", anchor="w", command=self.aba_multas)
+            btn_multas.pack(pady=5, padx=10, fill="x")
+            
+        btn_sair = ctk.CTkButton(self.sidebar, text="🚪 Sair", fg_color="red", hover_color="#8B0000", command=self.tela_login)
+        btn_sair.pack(side="bottom", pady=20, padx=10, fill="x")
+        
+        # Área de Conteúdo Principal
+        self.conteudo = ctk.CTkFrame(self, corner_radius=10)
+        self.conteudo.pack(side="right", fill="both", expand=True, padx=15, pady=15)
+        
+        # Inicializa na aba principal padrão do nível de acesso
+        if self.perfil_usuario == "gestor":
+            self.aba_dashboard()
+        else:
+            self.aba_checklist()
+
+    def limpar_conteudo(self):
+        for widget in self.conteudo.winfo_children():
+            widget.destroy()
+
+    # ==========================================
+    # 3. MÓDULO: CHECKLIST (FOCO OPERACIONAL)
+    # ==========================================
+    def aba_checklist(self):
+        self.limpar_conteudo()
+        
+        lbl_title = ctk.CTkLabel(self.conteudo, text="Checklist de Entrada e Saída (Operação Rápida)", font=("Arial", 22, "bold"))
+        lbl_title.pack(pady=15)
+        
+        frame_form = ctk.CTkFrame(self.conteudo)
+        frame_form.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        # Inputs rápidos
+        ctk.CTkLabel(frame_form, text="Placa do Veículo:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        txt_placa = ctk.CTkEntry(frame_form, placeholder_text="Ex: BRA2E19")
+        txt_placa.grid(row=0, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="Tipo de Operação:").grid(row=1, column=0, padx=10, pady=10, sticky="e")
+        cb_tipo = ctk.CTkComboBox(frame_form, values=["Entrada de Oficina", "Saída de Oficina", "Devolução", "Substituição"])
+        cb_tipo.grid(row=1, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="KM Atual:").grid(row=2, column=0, padx=10, pady=10, sticky="e")
+        txt_km = ctk.CTkEntry(frame_form, placeholder_text="Ex: 98500")
+        txt_km.grid(row=2, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="Nível Combustível:").grid(row=3, column=0, padx=10, pady=10, sticky="e")
+        cb_comb = ctk.CTkComboBox(frame_form, values=["Reserva", "1/4", "1/2", "3/4", "Cheio"])
+        cb_comb.grid(row=3, column=1, padx=10, pady=10)
+
+        ctk.CTkLabel(frame_form, text="Avarias visuais / Pneus / Sinistros:").grid(row=4, column=0, padx=10, pady=10, sticky="e")
+        txt_avarias = ctk.CTkEntry(frame_form, placeholder_text="Descreva amassados, pneus carecas ou ok", width=300)
+        txt_avarias.grid(row=4, column=1, padx=10, pady=10)
+
+        def salvar_checklist():
+            c = conn.cursor()
+            # Insere Checklist
+            c.execute("INSERT INTO checklists (placa, tipo, km, combustivel, avarias, operador) VALUES (?,?,?,?,?,?)",
+                      (txt_placa.get().upper(), cb_tipo.get(), txt_km.get(), cb_comb.get(), txt_avarias.get(), "Operador Campo"))
+            # Atualiza KM do veículo automaticamente
+            c.execute("UPDATE veiculos SET km_atual = ? WHERE placa = ?", (txt_km.get(), txt_placa.get().upper()))
+            conn.commit()
+            messagebox.showinfo("Sucesso", "Checklist registrado e KM da frota atualizado!")
+            self.aba_checklist()
+
+        btn_salvar = ctk.CTkButton(frame_form, text="Salvar e Transmitir Checklist", fg_color="green", command=salvar_checklist)
+        btn_salvar.grid(row=5, column=0, columnspan=2, pady=20)
+
+    # ==========================================
+    # 4. MÓDULO: ABASTECIMENTO (SIMPLIFICADO)
+    # ==========================================
+    def aba_abastecimento(self):
+        self.limpar_conteudo()
+        lbl_title = ctk.CTkLabel(self.conteudo, text="Lançamento Rápido de Abastecimento", font=("Arial", 22, "bold"))
+        lbl_title.pack(pady=15)
+        
+        frame_form = ctk.CTkFrame(self.conteudo)
+        frame_form.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        ctk.CTkLabel(frame_form, text="Placa:").grid(row=0, column=0, padx=10, pady=10)
+        txt_placa = ctk.CTkEntry(frame_form)
+        txt_placa.grid(row=0, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="Litros:").grid(row=1, column=0, padx=10, pady=10)
+        txt_litros = ctk.CTkEntry(frame_form)
+        txt_litros.grid(row=1, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="Valor Total (R$):").grid(row=2, column=0, padx=10, pady=10)
+        txt_valor = ctk.CTkEntry(frame_form)
+        txt_valor.grid(row=2, column=1, padx=10, pady=10)
+        
+        ctk.CTkLabel(frame_form, text="KM no ato:").grid(row=3, column=0, padx=10, pady=10)
+        txt_km = ctk.CTkEntry(frame_form)
+        txt_km.grid(row=3, column=1, padx=10, pady=10)
+
+        def salvar_abast():
+            c = conn.cursor()
+            c.execute("INSERT INTO abastecimentos (placa, litros, valor_total, km_registro) VALUES (?,?,?,?)",
+                      (txt_placa.get().upper(), txt_litros.get(), txt_valor.get(), txt_km.get()))
+            c.execute("UPDATE veiculos SET km_atual = ? WHERE placa = ?", (txt_km.get(), txt_placa.get().upper()))
+            conn.commit()
+            messagebox.showinfo("Sucesso", "Abastecimento computado no financeiro!")
+            self.aba_abastecimento()
+
+        btn_salvar = ctk.CTkButton(frame_form, text="Registrar Abastecimento", command=salvar_abast)
+        btn_salvar.grid(row=4, column=0, columnspan=2, pady=20)
+
+    # ==========================================
+    # 5. MÓDULO: ORDENS DE SERVIÇO & APROVAÇÕES
+    # ==========================================
+    def aba_ordens_servico(self):
+        self.limpar_conteudo()
+        lbl_title = ctk.CTkLabel(self.conteudo, text="Painel de OS, Manutenções e Aprovações Técnicas", font=("Arial", 22, "bold"))
+        lbl_title.pack(pady=15)
+        
+        # Form de Abertura de OS
+        frame_add = ctk.CTkFrame(self.conteudo)
+        frame_add.pack(pady=5, padx=10, fill="x")
+        
+        ctk.CTkLabel(frame_add, text="Placa:").grid(row=0, column=0, padx=5, pady=5)
+        txt_placa = ctk.CTkEntry(frame_add, width=100)
+        txt_placa.grid(row=0, column=1, padx=5, pady=5)
+        
+        ctk.CTkLabel(frame_add, text="Tipo:").grid(row=0, column=2, padx=5, pady=5)
+        cb_tipo = ctk.CTkComboBox(frame_add, values=["Preventiva", "Corretiva"], width=120)
+        cb_tipo.grid(row=0, column=3, padx=5, pady=5)
+        
+        ctk.CTkLabel(frame_add, text="Desc:").grid(row=0, column=4, padx=5, pady=5)
+        txt_desc = ctk.CTkEntry(frame_add, width=200)
+        txt_desc.grid(row=0, column=5, padx=5, pady=5)
+        
+        ctk.CTkLabel(frame_add, text="Custo (R$):").grid(row=0, column=6, padx=5, pady=5)
+        txt_custo = ctk.CTkEntry(frame_add, width=80)
+        txt_custo.grid(row=0, column=7, padx=5, pady=5)
+        
+        def criar_os():
+            c = conn.cursor()
+            placa = txt_placa.get().upper()
+            # Regra de negócio: Criou OS -> Veículo sinaliza "Em Manutenção"
+            c.execute("INSERT INTO ordens_servico (placa, tipo_manutencao, descricao, custo) VALUES (?,?,?,?)",
+                      (placa, cb_tipo.get(), txt_desc.get(), txt_custo.get()))
+            c.execute("UPDATE veiculos SET status = 'Em Manutenção' WHERE placa = ?", (placa,))
+            conn.commit()
+            messagebox.showinfo("OS Criada", "OS gerada com sucesso! Veículo bloqueado para manutenção preventiva/corretiva.")
+            self.aba_ordens_servico()
+            
+        btn_criar = ctk.CTkButton(frame_add, text="+ Abrir OS", fg_color="#1F6AA5", command=criar_os)
+        btn_criar.grid(row=0, column=8, padx=10, pady=5)
+        
+        # Lista de Aprovações Pendentes e Fluxos
+        lbl_sub = ctk.CTkLabel(self.conteudo, text="Fluxo de Aprovação e Execução", font=("Arial", 14, "bold"))
+        lbl_sub.pack(pady=10)
+        
+        frame_lista = ctk.CTkFrame(self.conteudo)
+        frame_lista.pack(pady=5, padx=10, fill="both", expand=True)
+        
+        c = conn.cursor()
+        c.execute("SELECT id, placa, tipo_manutencao, custo, status FROM ordens_servico WHERE status != 'Encerrado'")
+        rows = c.fetchall()
+        
+        for i, r in enumerate(rows):
+            os_id, plc, tp, cst, st = r
+            lbl_info = ctk.CTkLabel(frame_lista, text=f"OS #{os_id} | {plc} | {tp} | R${cst} | Status atual: {st}", font=("Arial", 12))
+            lbl_info.grid(row=i, column=0, padx=10, pady=5, sticky="w")
+            
+            if st == "Aguardando Aprovação":
+                btn_aprov = ctk.CTkButton(frame_lista, text="Aprovar (Entrar em Andamento)", fg_color="orange", text_color="black", height=20,
+                                          command=lambda o=os_id, p=plc: self.alterar_status_os(o, p, "Em Andamento", "Em Andamento"))
+                btn_aprov.grid(row=i, column=1, padx=5, pady=5)
+            elif st == "Em Andamento":
+                btn_fechar = ctk.CTkButton(frame_lista, text="Encerrar (Liberar Veículo)", fg_color="green", height=20,
+                                           command=lambda o=os_id, p=plc: self.alterar_status_os(o, p, "Encerrado", "Disponível"))
+                btn_fechar.grid(row=i, column=1, padx=5, pady=5)
+
+    def alterar_status_os(self, os_id, placa, novo_status_os, novo_status_veiculo):
+        c = conn.cursor()
+        c.execute("UPDATE ordens_servico SET status = ? WHERE id = ?", (novo_status_os, os_id))
+        c.execute("UPDATE veiculos SET status = ? WHERE placa = ?", (novo_status_veiculo, placa))
+        conn.commit()
+        messagebox.showinfo("Atualização", f"OS #{os_id} atualizada para {novo_status_os}!")
+        self.aba_ordens_servico()
+
+    # ==========================================
+    # 6. MÓDULO: MULTAS INTELIGENTES (AUTOPREENCHIMENTO)
+    # ==========================================
+    def aba_multas(self):
+        self.limpar_conteudo()
+        lbl_title = ctk.CTkLabel(self.conteudo, text="Registro Inteligente de Multas (Preenchimento Automático)", font=("Arial", 22, "bold"))
+        lbl_title.pack(pady=15)
+        
+        frame_form = ctk.CTkFrame(self.conteudo)
+        frame_form.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        ctk.CTkLabel(frame_form, text="Placa:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        txt_placa = ctk.CTkEntry(frame_form)
+        txt_placa.grid(row=0, column=1, padx=10, pady=5)
+        
+        ctk.CTkLabel(frame_form, text="Data:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        txt_data = ctk.CTkEntry(frame_form, placeholder_text="DD/MM/AAAA")
+        txt_data.grid(row=1, column=1, padx=10, pady=5)
+        
+        ctk.CTkLabel(frame_form, text="Endereço/Rodovia:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        txt_end = ctk.CTkEntry(frame_form, placeholder_text="Ex: BR-116 KM 20")
+        txt_end.grid(row=2, column=1, padx=10, pady=5)
+        
+        ctk.CTkLabel(frame_form, text="Código da Multa:").grid(row=3, column=0, padx=10, pady=5, sticky="e")
+        txt_cod = ctk.CTkEntry(frame_form, placeholder_text="Ex: 7455-0, 7463-0")
+        txt_cod.grid(row=3, column=1, padx=10, pady=5)
+        
+        lbl_help = ctk.CTkLabel(frame_form, text="Códigos válidos no sistema de teste: 7455-0, 7463-0, 5010-0", text_color="gray")
+        lbl_help.grid(row=3, column=2, padx=10, pady=5)
+
+        def processar_multa():
+            cod = txt_cod.get().strip()
+            if cod in DICIONARIO_MULTAS:
+                info = DICIONARIO_MULTAS[cod]
+                c = conn.cursor()
+                c.execute('''INSERT INTO multas (placa, data, endereco, codigo_multa, gravidade, pontos, valor, descricao)
+                             VALUES (?,?,?,?,?,?,?,?)''', 
+                          (txt_placa.get().upper(), txt_data.get(), txt_end.get(), cod, info["gravidade"], info["pontos"], info["valor"], info["desc"]))
+                conn.commit()
+                messagebox.showinfo("Multa Gravada", f"Sucesso!\nGravidade: {info['gravidade']}\nValor: R$ {info['valor']}\nPontos: {info['pontos']}")
+                self.aba_multas()
             else:
-                try:
-                    # Formata a data de hoje
-                    from datetime import datetime
-                    data_hoje = datetime.now().strftime("%d/%m/%Y")
-                    
-                    # Cria o texto do status dos itens
-                    status_itens = f"Pneus: {pneus} | Lataria: {avarias} | Luzes: {farois}/{setas} | Doc: {doc} | Limpo: {limpeza}"
-                    
-                    # Salva tudo na sua tabela de histórico ou eventos
-                    # (Ajuste o nome das colunas se seu banco for diferente)
-                    query_db('''INSERT INTO movimentacoes (placa, data, tipo_evento, km_registro, observacoes, checklist_status) 
-                                VALUES (?, ?, ?, ?, ?, ?)''', 
-                             (placa, data_hoje, motivo, float(km_atual), observacoes, status_itens), is_select=False)
-                    
-                    # Atualiza o odômetro do carro automaticamente
-                    query_db("UPDATE veiculos SET km_atual = ? WHERE placa = ? AND km_atual < ?", 
-                             (float(km_atual), placa, float(km_atual)), is_select=False)
-                    
-                    st.success(f"🎉 Checklist de **{motivo}** do veículo **{placa}** salvo com sucesso!")
-                except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
+                messagebox.showerror("Erro", "Código de infração não cadastrado na base automatizada do sistema.")
+
+        btn_multa = ctk.CTkButton(frame_form, text="Aplicar e Autopreencher Dados", fg_color="red", command=processar_multa)
+        btn_multa.grid(row=4, column=0, columnspan=2, pady=20)
+
+    # ==========================================
+    # 7. DASHBOARD, REVISÕES, KPIS & GRÁFICOS
+    # ==========================================
+    def aba_dashboard(self):
+        self.limpar_conteudo()
+        
+        # Cabeçalho de Alertas Inteligentes (Troca de óleo / KM Revisão)
+        frame_alertas = ctk.CTkFrame(self.conteudo, fg_color="#331a1a")
+        frame_alertas.pack(fill="x", padx=15, pady=5)
+        
+        c = conn.cursor()
+        c.execute("SELECT placa, km_atual, km_proxima_revisao FROM veiculos")
+        veiculos = c.fetchall()
+        
+        alertas_ativos = False
+        for v in veiculos:
+            # Se faltar menos de 3.000 KM para a revisão de 10 em 10 mil KM
+            if v[2] - v[1] <= 3000:
+                alertas_ativos = True
+                lbl_alerta = ctk.CTkLabel(frame_alertas, text=f"⚠️ ALERTA DE REVISÃO: Veículo {v[0]} está com {v[1]} KM (Revisão programada em: {v[2]} KM)", text_color="orange", font=("Arial", 12, "bold"))
+                lbl_alerta.pack(anchor="w", padx=10, pady=2)
+                
+        if not alertas_ativos:
+            lbl_alerta = ctk.CTkLabel(frame_alertas, text="✅ Todos os planos de revisão (Trocas de óleo/filtros) e CNHs em dia.", text_color="green")
+            lbl_alerta.pack(anchor="w", padx=10, pady=5)
+
+        # KPIs Financeiros e Operacionais (Cartões de dados)
+        frame_kpis = ctk.CTkFrame(self.conteudo)
+        frame_kpis.pack(fill="x", padx=15, pady=10)
+        
+        # Coleta de dados financeiros reais do banco
+        c.execute("SELECT SUM(custo) FROM ordens_servico")
+        total_maint = c.fetchone()[0] or 0.0
+        c.execute("SELECT SUM(valor_total) FROM abastecimentos")
+        total_fuel = c.fetchone()[0] or 0.0
+        total_custos_operacao = total_maint + total_fuel
+        
+        c.execute("SELECT COUNT(*) FROM veiculos WHERE status='Em Manutenção' OR status='Em Andamento'")
+        em_oficina = c.fetchone()[0]
+        
+        # Renderização dos Cartões
+        kpi1 = ctk.CTkFrame(frame_kpis, width=200, height=80, fg_color="#1f2937")
+        kpi1.pack(side="left", padx=15, pady=10, expand=True)
+        ctk.CTkLabel(kpi1, text="Custo de Operação", font=("Arial", 12, "gray")).pack(pady=5)
+        ctk.CTkLabel(kpi1, text=f"R$ {total_custos_operacao:,.2f}", font=("Arial", 18, "bold"), text_color="#10B981").pack()
+
+        kpi2 = ctk.CTkFrame(frame_kpis, width=200, height=80, fg_color="#1f2937")
+        kpi2.pack(side="left", padx=15, pady=10, expand=True)
+        ctk.CTkLabel(kpi2, text="Gasto c/ Combustível", font=("Arial", 12, "gray")).pack(pady=5)
+        ctk.CTkLabel(kpi2, text=f"R$ {total_fuel:,.2f}", font=("Arial", 18, "bold")).pack()
+
+        kpi3 = ctk.CTkFrame(frame_kpis, width=200, height=80, fg_color="#1f2937")
+        kpi3.pack(side="left", padx=15, pady=10, expand=True)
+        ctk.CTkLabel(kpi3, text="Frota Indisponível (Oficina)", font=("Arial", 12, "gray")).pack(pady=5)
+        ctk.CTkLabel(kpi3, text=str(em_oficina), font=("Arial", 18, "bold"), text_color="red").pack()
+
+        # Seção Gráfica Dinâmica (Matplotlib integrado ao CustomTkinter)
+        frame_graficos = ctk.CTkFrame(self.conteudo)
+        frame_graficos.pack(fill="both", expand=True, padx=15, pady=5)
+        
+        fig, ax = plt.subplots(figsize=(5, 2.5), facecolor='#1D1E1E')
+        ax.set_facecolor('#1D1E1E')
+        
+        categorias = ['Manutenção', 'Combustível']
+        valores = [total_maint, total_fuel]
+        
+        ax.bar(categorias, valores, color=['#EF4444', '#3B82F6'])
+        ax.tick_params(colors='white')
+        ax.spines['bottom'].set_color('white')
+        ax.spines['left'].set_color('white')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.set_title("Distribuição de Custos Reais da Frota", color='white', fontsize=12)
+        
+        canvas = FigureCanvasTkAgg(fig, master=frame_graficos)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Botão de Exportação de Relatórios solicitado
+        def exportar_dados():
+            with open("relatorio_financeiro.csv", "w") as f:
+                f.write("Tipo Custos,Valor Total\n")
+                f.write(f"Manutencao Total,{total_maint}\n")
+                f.write(f"Combustivel Total,{total_fuel}\n")
+            messagebox.showinfo("Exportador", "Relatório de Custos e KPIs exportado com sucesso em CSV na pasta raiz do sistema!")
+
+        btn_exportar = ctk.CTkButton(self.conteudo, text="📥 Exportar Dados Gerenciais (.CSV)", command=exportar_dados)
+        btn_exportar.pack(pady=10)
+
+
+if __name__ == "__main__":
+    app = SistemaGestaoFrotas()
+    app.mainloop()
